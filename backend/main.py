@@ -23,15 +23,15 @@ def health_check():
 
 @app.post("/api/profile/parse")
 async def parse_profile(file: UploadFile = File(...)):
-    """Parse a PDF, DOC, or DOCX resume and return structured profile data."""
+    """Parse a PDF, DOC, DOCX, or TXT resume and return structured profile data."""
     if not file:
         raise HTTPException(status_code=400, detail="No resume uploaded.")
 
     filename = file.filename or ""
-    if not filename.lower().endswith((".pdf", ".doc", ".docx")):
+    if not filename.lower().endswith((".pdf", ".doc", ".docx", ".txt")):
         raise HTTPException(
             status_code=400,
-            detail="Invalid file type. Please upload a PDF, DOC, or DOCX file.",
+            detail="Invalid file type. Please upload a PDF, DOC, DOCX, or TXT file.",
         )
 
     try:

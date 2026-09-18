@@ -7,7 +7,7 @@ from pathlib import Path
 import fitz
 from docx import Document
 
-SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
 
 
 def _require_text(text: str, extension: str) -> str:
@@ -40,6 +40,19 @@ def _extract_text_from_docx(file_bytes: bytes) -> str:
         raise
     except Exception as exc:
         raise ValueError("Unable to read the DOCX. Please upload a valid Word document.") from exc
+
+
+def _extract_text_from_txt(file_bytes: bytes) -> str:
+    try:
+        try:
+            text = file_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = file_bytes.decode("cp1252")
+        return _require_text(text, ".txt")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Unable to read the TXT file. Please upload a valid text file.") from exc
 
 
 def _extract_text_from_doc(file_bytes: bytes) -> str:
@@ -87,16 +100,18 @@ def _extract_text_from_doc(file_bytes: bytes) -> str:
 
 
 def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
-    """Extract text from PDF, legacy DOC, or DOCX resume bytes."""
+    """Extract text from PDF, DOC, DOCX, or TXT resume bytes."""
     if not file_bytes:
         raise ValueError("No resume uploaded.")
 
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
-        raise ValueError("Invalid file type. Please upload a PDF, DOC, or DOCX file.")
+        raise ValueError("Invalid file type. Please upload a PDF, DOC, DOCX, or TXT file.")
 
     if extension == ".pdf":
         return _extract_text_from_pdf(file_bytes)
     if extension == ".docx":
         return _extract_text_from_docx(file_bytes)
+    if extension == ".txt":
+        return _extract_text_from_txt(file_bytes)
     return _extract_text_from_doc(file_bytes)

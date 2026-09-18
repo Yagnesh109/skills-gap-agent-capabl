@@ -16,13 +16,13 @@ function App() {
 
   const handleSubmit = async () => {
     if (!selectedFile) {
-      setMessage('Please choose a PDF, DOC, or DOCX resume first.')
+      setMessage('Please choose a PDF, DOC, DOCX, or TXT resume first.')
       return
     }
 
     const filename = selectedFile.name.toLowerCase()
-    if (!filename.endsWith('.pdf') && !filename.endsWith('.doc') && !filename.endsWith('.docx')) {
-      setMessage('Invalid file type. Please upload a PDF, DOC, or DOCX file.')
+    if (!filename.endsWith('.pdf') && !filename.endsWith('.doc') && !filename.endsWith('.docx') && !filename.endsWith('.txt')) {
+      setMessage('Invalid file type. Please upload a PDF, DOC, DOCX, or TXT file.')
       return
     }
 
@@ -59,13 +59,13 @@ function App() {
       <div className="card">
         <a className="back-link" href="/">← Back to Dashboard</a>
         <h1>Profile Parsing Agent</h1>
-        <p className="subtitle">Upload a PDF, DOC, or DOCX resume and view the extracted structured profile.</p>
+        <p className="subtitle">Upload a PDF, DOC, DOCX, or TXT resume and view the extracted structured profile.</p>
 
         <label className="upload-box">
           <span className="upload-label">Choose Resume</span>
           <input
             type="file"
-            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
             onChange={handleFileChange}
           />
         </label>

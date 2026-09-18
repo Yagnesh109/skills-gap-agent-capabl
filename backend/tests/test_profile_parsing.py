@@ -30,3 +30,11 @@ def test_docx_text_is_extracted():
 
     assert "Jane Doe" in extracted_text
     assert "Python Developer" in extracted_text
+
+
+def test_txt_text_is_extracted():
+    resume_text = b"Alex Morgan\nBackend Developer\nPython, FastAPI"
+
+    extracted_text = extract_text_from_file(resume_text, "resume.txt")
+
+    assert extracted_text == "Alex Morgan\nBackend Developer\nPython, FastAPI"
