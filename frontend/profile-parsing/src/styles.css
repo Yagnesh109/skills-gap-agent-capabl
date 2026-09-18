@@ -1,0 +1,131 @@
+:root {
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1f2937;
+  background: #f3f6fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  min-height: 100%;
+  min-height: 100vh;
+}
+
+body {
+  background: linear-gradient(135deg, #edf5ff, #f8fafc);
+}
+
+.page-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.card {
+  width: min(980px, 100%);
+  background: white;
+  border: 1px solid #dde7f4;
+  border-radius: 18px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  padding: 32px;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 22px;
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: clamp(2rem, 3vw, 2.8rem);
+}
+
+.subtitle {
+  margin-top: 0;
+  color: #475569;
+  font-size: 1rem;
+}
+
+.upload-box {
+  display: block;
+  border: 2px dashed #b9c8e0;
+  border-radius: 12px;
+  background: #f9fbff;
+  padding: 18px 16px;
+  margin-top: 20px;
+}
+
+.upload-label {
+  display: block;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+input[type='file'] {
+  width: 100%;
+}
+
+button {
+  margin-top: 18px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.message {
+  margin-top: 16px;
+  min-height: 24px;
+  color: #334155;
+}
+
+.message.error {
+  color: #b91c1c;
+}
+
+.result-panel {
+  margin-top: 24px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.result-panel h2 {
+  margin-top: 0;
+  font-size: 1.15rem;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9rem;
+  color: #0f172a;
+}
