@@ -17,4 +17,13 @@ def get_gemini_api_key() -> str:
 
 def get_gemini_model() -> str:
     """Return the Gemini model, allowing deployments to override the default."""
-    return os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+    return os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+
+
+def get_fallback_gemini_models() -> list[str]:
+    """Return ordered list of fallback Gemini models to use if rate limits (429) occur."""
+    primary = get_gemini_model()
+    candidates = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.6-flash"]
+    models = [primary] + [m for m in candidates if m != primary]
+    return models
+

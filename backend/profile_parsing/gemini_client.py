@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import google.generativeai as genai
 
-from .config import get_gemini_api_key, get_gemini_model
+from .config import get_fallback_gemini_models, get_gemini_api_key, get_gemini_model
 from .schemas import EMPTY_PROFILE
 
 
@@ -133,7 +133,7 @@ def parse_resume_with_gemini(resume_text: str) -> dict:
     api_key = get_gemini_api_key()
     genai.configure(api_key=api_key)
 
-    model = genai.GenerativeModel(get_gemini_model())
+    candidate_models = get_fallback_gemini_models()
     prompt = f"""
     Extract the candidate's profile from the following resume text.
     Return valid JSON only. Use this exact structure:
@@ -158,16 +158,32 @@ def parse_resume_with_gemini(resume_text: str) -> dict:
     {resume_text}
     """
 
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.1,
-                "response_mime_type": "application/json",
-            },
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.1,
+                    "response_mime_type": "application/json",
+                },
+            )
+            result = response.text
+            profile = extract_json_from_text(result)
+            return normalize_profile_dict(profile)
+        except Exception as exc:
+            err_msg = str(exc)
+            last_error = exc
+            # If 429 / quota error, attempt next fallback model
+            if "429" in err_msg or "quota" in err_msg.lower() or "resourceexhausted" in err_msg.lower():
+                continue
+            # For non-429 exceptions (e.g. invalid key or prompt format), fail immediately
+            raise ValueError(f"Gemini API request failed: {exc}") from exc
+
+    if "429" in str(last_error) or "quota" in str(last_error).lower():
+        raise ValueError(
+            "Gemini API rate limit or quota exceeded across models. Please wait a minute and try again."
         )
-        result = response.text
-        profile = extract_json_from_text(result)
-        return normalize_profile_dict(profile)
-    except Exception as exc:  # pragma: no cover - external API path
-        raise ValueError(f"Gemini API request failed: {exc}") from exc
+    raise ValueError(f"Gemini API request failed: {last_error}")
+

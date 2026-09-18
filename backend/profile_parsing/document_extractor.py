@@ -7,7 +7,10 @@ from pathlib import Path
 import fitz
 from docx import Document
 
-SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
+from .ocr_extractor import extract_text_from_image_bytes, ocr_pdf_bytes
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"} | IMAGE_EXTENSIONS
 
 
 def _require_text(text: str, extension: str) -> str:
@@ -19,15 +22,21 @@ def _require_text(text: str, extension: str) -> str:
 
 def _extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
+        raw_text = ""
         with fitz.open(stream=file_bytes, filetype="pdf") as document:
-            return _require_text(
-                "\n".join(page.get_text("text") for page in document),
-                ".pdf",
-            )
+            raw_text = "\n".join(page.get_text("text") for page in document).strip()
+
+        # If standard text extraction yields minimal text, attempt OCR on scanned pages
+        if len(raw_text) < 30:
+            ocr_text = ocr_pdf_bytes(file_bytes)
+            if len(ocr_text) > len(raw_text):
+                raw_text = ocr_text
+
+        return _require_text(raw_text, ".pdf")
     except ValueError:
         raise
     except Exception as exc:
-        raise ValueError("Unable to read the PDF. Please upload a valid text-based PDF.") from exc
+        raise ValueError("Unable to read the PDF. Please upload a valid PDF or scanned document.") from exc
 
 
 def _extract_text_from_docx(file_bytes: bytes) -> str:
@@ -53,6 +62,16 @@ def _extract_text_from_txt(file_bytes: bytes) -> str:
         raise
     except Exception as exc:
         raise ValueError("Unable to read the TXT file. Please upload a valid text file.") from exc
+
+
+def _extract_text_from_image(file_bytes: bytes, extension: str) -> str:
+    try:
+        ocr_text = extract_text_from_image_bytes(file_bytes)
+        return _require_text(ocr_text, extension)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Unable to read text from image ({extension}).") from exc
 
 
 def _extract_text_from_doc(file_bytes: bytes) -> str:
@@ -100,13 +119,15 @@ def _extract_text_from_doc(file_bytes: bytes) -> str:
 
 
 def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
-    """Extract text from PDF, DOC, DOCX, or TXT resume bytes."""
+    """Extract text from PDF, DOC, DOCX, TXT, or Image resume bytes."""
     if not file_bytes:
         raise ValueError("No resume uploaded.")
 
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
-        raise ValueError("Invalid file type. Please upload a PDF, DOC, DOCX, or TXT file.")
+        raise ValueError(
+            "Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image (PNG, JPG, JPEG, WEBP, BMP, TIFF) file."
+        )
 
     if extension == ".pdf":
         return _extract_text_from_pdf(file_bytes)
@@ -114,4 +135,7 @@ def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
         return _extract_text_from_docx(file_bytes)
     if extension == ".txt":
         return _extract_text_from_txt(file_bytes)
+    if extension in IMAGE_EXTENSIONS:
+        return _extract_text_from_image(file_bytes, extension)
     return _extract_text_from_doc(file_bytes)
+

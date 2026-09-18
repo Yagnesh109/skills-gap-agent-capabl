@@ -19,13 +19,14 @@ function App() {
   const handleSubmit = async () => {
     if (activeTab === 'file') {
       if (!selectedFile) {
-        setMessage('Please choose a PDF, DOC, DOCX, or TXT resume first.')
+        setMessage('Please choose a PDF, DOC, DOCX, TXT, or Image resume file first.')
         return
       }
 
       const filename = selectedFile.name.toLowerCase()
-      if (!filename.endsWith('.pdf') && !filename.endsWith('.doc') && !filename.endsWith('.docx') && !filename.endsWith('.txt')) {
-        setMessage('Invalid file type. Please upload a PDF, DOC, DOCX, or TXT file.')
+      const allowedExts = ['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff']
+      if (!allowedExts.some(ext => filename.endsWith(ext))) {
+        setMessage('Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image file.')
         return
       }
 
@@ -90,14 +91,14 @@ function App() {
     }
   }
 
-  const isErrorMessage = message && (message.includes('Please') || message.includes('Invalid') || message.includes('failed'))
+  const isErrorMessage = message && (message.includes('Please') || message.includes('Invalid') || message.includes('failed') || message.includes('exceeded'))
 
   return (
     <div className="page-shell">
       <div className="card">
         <a className="back-link" href="/">← Back to Dashboard</a>
         <h1>Profile Parsing Agent</h1>
-        <p className="subtitle">Choose your preferred method to extract structured candidate profiles using AI.</p>
+        <p className="subtitle">Choose your preferred method to extract structured candidate profiles using AI & OCR.</p>
 
         <div className="tab-group">
           <button
@@ -124,10 +125,10 @@ function App() {
 
         {activeTab === 'file' ? (
           <label className="upload-box">
-            <span className="upload-label">Choose Resume</span>
+            <span className="upload-label">Choose Resume (PDF, DOCX, TXT, PNG, JPG)</span>
             <input
               type="file"
-              accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+              accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp,.bmp,.tiff,image/*"
               onChange={handleFileChange}
             />
           </label>

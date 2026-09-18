@@ -66,3 +66,43 @@ def test_parse_profile_text_success(mock_parse):
     assert data["profile"]["skills"] == ["Python", "FastAPI"]
     mock_parse.assert_called_once_with("John Doe, Python Developer with FastAPI")
 
+
+@patch("profile_parsing.document_extractor.extract_text_from_image_bytes")
+def test_image_text_is_extracted(mock_ocr):
+    mock_ocr.return_value = "Sarah Connor\nCybersecurity Specialist"
+    image_bytes = b"fake_png_bytes"
+
+    extracted_text = extract_text_from_file(image_bytes, "resume.png")
+
+    assert extracted_text == "Sarah Connor\nCybersecurity Specialist"
+    mock_ocr.assert_called_once_with(image_bytes)
+
+
+@patch("google.generativeai.GenerativeModel")
+def test_gemini_fallback_on_429_retry(mock_model_cls):
+    from profile_parsing.gemini_client import parse_resume_with_gemini
+
+    class Mock429Model:
+        def generate_content(self, *args, **kwargs):
+            raise Exception("429 You exceeded your current quota, limit: 5, model: gemini-2.0-flash")
+
+    class MockSuccessModel:
+        def generate_content(self, *args, **kwargs):
+            class Response:
+                text = '{"personal_info": {"name": "Alice Smith"}, "skills": ["Python"]}'
+            return Response()
+
+    def model_factory(model_name):
+        if "2.0" in model_name:
+            return Mock429Model()
+        return MockSuccessModel()
+
+    mock_model_cls.side_effect = model_factory
+
+    profile = parse_resume_with_gemini("Alice Smith Python Developer")
+    assert profile["personal_info"]["name"] == "Alice Smith"
+    assert profile["skills"] == ["Python"]
+
+
+
+
