@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from profile_parsing.pdf_extractor import extract_text_from_pdf
+from profile_parsing.document_extractor import extract_text_from_file
 from profile_parsing.gemini_client import parse_resume_with_gemini
 
 app = FastAPI(title="Skill Gap to Job Matching Agent API")
@@ -23,12 +23,16 @@ def health_check():
 
 @app.post("/api/profile/parse")
 async def parse_profile(file: UploadFile = File(...)):
-    """Parse a resume PDF and return structured profile data."""
+    """Parse a PDF, DOC, or DOCX resume and return structured profile data."""
     if not file:
-        raise HTTPException(status_code=400, detail="No PDF uploaded.")
+        raise HTTPException(status_code=400, detail="No resume uploaded.")
 
-    if file.filename is None or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a PDF file.")
+    filename = file.filename or ""
+    if not filename.lower().endswith((".pdf", ".doc", ".docx")):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Please upload a PDF, DOC, or DOCX file.",
+        )
 
     try:
         pdf_bytes = await file.read()
@@ -36,10 +40,10 @@ async def parse_profile(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Unable to read uploaded file.") from exc
 
     if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="No PDF uploaded.")
+        raise HTTPException(status_code=400, detail="No resume uploaded.")
 
     try:
-        resume_text = extract_text_from_pdf(pdf_bytes)
+        resume_text = extract_text_from_file(pdf_bytes, filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

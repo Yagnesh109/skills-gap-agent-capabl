@@ -16,12 +16,13 @@ function App() {
 
   const handleSubmit = async () => {
     if (!selectedFile) {
-      setMessage('Please choose a PDF resume first.')
+      setMessage('Please choose a PDF, DOC, or DOCX resume first.')
       return
     }
 
-    if (selectedFile.type !== 'application/pdf') {
-      setMessage('Invalid file type. Please upload a PDF.')
+    const filename = selectedFile.name.toLowerCase()
+    if (!filename.endsWith('.pdf') && !filename.endsWith('.doc') && !filename.endsWith('.docx')) {
+      setMessage('Invalid file type. Please upload a PDF, DOC, or DOCX file.')
       return
     }
 
@@ -58,11 +59,15 @@ function App() {
       <div className="card">
         <a className="back-link" href="/">← Back to Dashboard</a>
         <h1>Profile Parsing Agent</h1>
-        <p className="subtitle">Upload a resume PDF and view the extracted structured profile.</p>
+        <p className="subtitle">Upload a PDF, DOC, or DOCX resume and view the extracted structured profile.</p>
 
         <label className="upload-box">
-          <span className="upload-label">Choose PDF Resume</span>
-          <input type="file" accept="application/pdf" onChange={handleFileChange} />
+          <span className="upload-label">Choose Resume</span>
+          <input
+            type="file"
+            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            onChange={handleFileChange}
+          />
         </label>
 
         <button onClick={handleSubmit} disabled={isLoading}>
