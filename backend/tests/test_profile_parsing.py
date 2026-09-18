@@ -1,11 +1,16 @@
 from io import BytesIO
+from unittest.mock import patch
 
 import pytest
 from docx import Document
+from fastapi.testclient import TestClient
 
+from main import app
 from profile_parsing.schemas import EMPTY_PROFILE
 from profile_parsing.document_extractor import extract_text_from_file
 from profile_parsing.pdf_extractor import extract_text_from_pdf
+
+client = TestClient(app)
 
 
 def test_empty_profile_has_expected_structure():
@@ -38,3 +43,26 @@ def test_txt_text_is_extracted():
     extracted_text = extract_text_from_file(resume_text, "resume.txt")
 
     assert extracted_text == "Alex Morgan\nBackend Developer\nPython, FastAPI"
+
+
+def test_parse_profile_text_empty_error():
+    response = client.post("/api/profile/parse-text", json={"text": "   "})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Resume text cannot be empty."
+
+
+@patch("main.parse_resume_with_gemini")
+def test_parse_profile_text_success(mock_parse):
+    mock_parse.return_value = {
+        **EMPTY_PROFILE,
+        "personal_info": {"name": "John Doe", "email": "john@example.com", "phone": "", "location": ""},
+        "skills": ["Python", "FastAPI"],
+    }
+    response = client.post("/api/profile/parse-text", json={"text": "John Doe, Python Developer with FastAPI"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["profile"]["personal_info"]["name"] == "John Doe"
+    assert data["profile"]["skills"] == ["Python", "FastAPI"]
+    mock_parse.assert_called_once_with("John Doe, Python Developer with FastAPI")
+

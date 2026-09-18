@@ -1,10 +1,15 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from profile_parsing.document_extractor import extract_text_from_file
 from profile_parsing.gemini_client import parse_resume_with_gemini
 
 app = FastAPI(title="Skill Gap to Job Matching Agent API")
+
+
+class TextParseRequest(BaseModel):
+    text: str
 
 # Allow the frontend dev server to call the API during local development.
 app.add_middleware(
@@ -53,3 +58,19 @@ async def parse_profile(file: UploadFile = File(...)):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"success": True, "profile": parsed_profile}
+
+
+@app.post("/api/profile/parse-text")
+async def parse_profile_text(request: TextParseRequest):
+    """Parse raw text resume input and return structured profile data."""
+    raw_text = (request.text or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="Resume text cannot be empty.")
+
+    try:
+        parsed_profile = parse_resume_with_gemini(raw_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"success": True, "profile": parsed_profile}
+

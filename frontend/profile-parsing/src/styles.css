@@ -64,12 +64,54 @@ h1 {
   font-size: 1rem;
 }
 
+.tab-group {
+  display: flex;
+  gap: 10px;
+  margin-top: 24px;
+  border-bottom: 2px solid #e2e8f0;
+  padding-bottom: 2px;
+}
+
+.tab-btn {
+  margin-top: 0;
+  background: transparent;
+  color: #64748b;
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 6px 6px 0 0;
+  padding: 10px 20px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  color: #2563eb;
+  background: #f1f5f9;
+}
+
+.tab-btn.active {
+  color: #2563eb;
+  border-bottom: 3px solid #2563eb;
+  background: #eff6ff;
+}
+
 .upload-box {
   display: block;
   border: 2px dashed #b9c8e0;
   border-radius: 12px;
   background: #f9fbff;
-  padding: 18px 16px;
+  padding: 24px 20px;
+  margin-top: 20px;
+}
+
+.text-input-box {
+  display: block;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #f9fbff;
+  padding: 20px;
   margin-top: 20px;
 }
 
@@ -77,24 +119,50 @@ h1 {
   display: block;
   margin-bottom: 12px;
   font-weight: 600;
+  color: #1e293b;
 }
 
 input[type='file'] {
   width: 100%;
 }
 
-button {
-  margin-top: 18px;
+.raw-text-input {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: #0f172a;
+  background: #ffffff;
+  resize: vertical;
+}
+
+.raw-text-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.submit-btn {
+  margin-top: 20px;
   background: #2563eb;
   color: white;
   border: none;
   border-radius: 10px;
-  padding: 12px 18px;
+  padding: 12px 24px;
   font-size: 1rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 0.2s ease;
 }
 
-button:disabled {
+.submit-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.submit-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
@@ -103,6 +171,7 @@ button:disabled {
   margin-top: 16px;
   min-height: 24px;
   color: #334155;
+  font-weight: 500;
 }
 
 .message.error {
@@ -114,12 +183,13 @@ button:disabled {
   border: 1px solid #e2e8f0;
   background: #f8fafc;
   border-radius: 12px;
-  padding: 16px;
+  padding: 20px;
 }
 
 .result-panel h2 {
   margin-top: 0;
   font-size: 1.15rem;
+  color: #0f172a;
 }
 
 pre {
@@ -128,4 +198,9 @@ pre {
   word-break: break-word;
   font-size: 0.9rem;
   color: #0f172a;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
 }
+
