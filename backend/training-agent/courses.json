@@ -1,0 +1,137 @@
+[
+  {
+    "course_id": "CRS-101",
+    "title": "Modern Frontend Development with React & Redux",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["React", "JavaScript", "Redux", "Frontend Development"],
+    "duration_weeks": 4,
+    "difficulty": "Intermediate",
+    "url": "https://infyspringboard.onwingspan.com"
+  },
+  {
+    "course_id": "CRS-102",
+    "title": "Database Management Systems & PostgreSQL",
+    "provider": "NPTEL",
+    "skills_taught": ["PostgreSQL", "SQL", "Database Design", "RDBMS"],
+    "duration_weeks": 8,
+    "difficulty": "Beginner",
+    "url": "https://nptel.ac.in/courses"
+  },
+  {
+    "course_id": "CRS-103",
+    "title": "Building Production REST APIs with FastAPI & Python",
+    "provider": "Coursera",
+    "skills_taught": ["FastAPI", "Python", "REST APIs", "Pydantic"],
+    "duration_weeks": 3,
+    "difficulty": "Intermediate",
+    "url": "https://www.coursera.org"
+  },
+  {
+    "course_id": "CRS-104",
+    "title": "Containerization Essentials with Docker and Kubernetes",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["Docker", "Kubernetes", "DevOps", "CI/CD"],
+    "duration_weeks": 4,
+    "difficulty": "Intermediate",
+    "url": "https://infyspringboard.onwingspan.com"
+  },
+  {
+    "course_id": "CRS-105",
+    "title": "Full Stack Development with Spring Boot & Java",
+    "provider": "NPTEL",
+    "skills_taught": ["Java", "Spring Boot", "REST APIs", "Microservices"],
+    "duration_weeks": 12,
+    "difficulty": "Intermediate",
+    "url": "https://nptel.ac.in/courses"
+  },
+  {
+    "course_id": "CRS-106",
+    "title": "Associate Web Developer (NSQF Level 5)",
+    "provider": "Skill India",
+    "skills_taught": ["HTML", "CSS", "JavaScript", "Git"],
+    "duration_weeks": 6,
+    "difficulty": "Beginner",
+    "url": "https://www.skillindiadigital.gov.in"
+  },
+  {
+    "course_id": "CRS-107",
+    "title": "Backend Engineering with Node.js and Express",
+    "provider": "Coursera",
+    "skills_taught": ["Node.js", "Express.js", "JavaScript", "MongoDB"],
+    "duration_weeks": 4,
+    "difficulty": "Intermediate",
+    "url": "https://www.coursera.org"
+  },
+  {
+    "course_id": "CRS-108",
+    "title": "Practical Linux Administration and Shell Scripting",
+    "provider": "NPTEL",
+    "skills_taught": ["Linux", "Bash", "Shell Scripting", "DevOps"],
+    "duration_weeks": 4,
+    "difficulty": "Beginner",
+    "url": "https://nptel.ac.in/courses"
+  },
+  {
+    "course_id": "CRS-109",
+    "title": "Cloud Computing Infrastructure & AWS Fundamentals",
+    "provider": "Skill India",
+    "skills_taught": ["AWS", "Cloud Computing", "Linux", "Networking"],
+    "duration_weeks": 6,
+    "difficulty": "Beginner",
+    "url": "https://www.skillindiadigital.gov.in"
+  },
+  {
+    "course_id": "CRS-110",
+    "title": "Applied Machine Learning with Scikit-Learn & Pandas",
+    "provider": "NPTEL",
+    "skills_taught": ["Python", "Pandas", "Scikit-Learn", "Machine Learning"],
+    "duration_weeks": 8,
+    "difficulty": "Intermediate",
+    "url": "https://nptel.ac.in/courses"
+  },
+  {
+    "course_id": "CRS-111",
+    "title": "Data Analysis and Visualization with Power BI & SQL",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["Power BI", "SQL", "Data Analysis", "Excel"],
+    "duration_weeks": 4,
+    "difficulty": "Beginner",
+    "url": "https://infyspringboard.onwingspan.com"
+  },
+  {
+    "course_id": "CRS-112",
+    "title": "Cross-Platform Mobile App Development with Flutter",
+    "provider": "Coursera",
+    "skills_taught": ["Flutter", "Dart", "Mobile Development", "REST APIs"],
+    "duration_weeks": 6,
+    "difficulty": "Intermediate",
+    "url": "https://www.coursera.org"
+  },
+  {
+    "course_id": "CRS-113",
+    "title": "Software Testing Automation with Selenium & PyTest",
+    "provider": "Skill India",
+    "skills_taught": ["Testing", "Selenium", "Python", "QA"],
+    "duration_weeks": 5,
+    "difficulty": "Beginner",
+    "url": "https://www.skillindiadigital.gov.in"
+  },
+  {
+    "course_id": "CRS-114",
+    "title": "Git, GitHub, and Open Source Collaboration",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["Git", "GitHub", "Version Control", "CI/CD"],
+    "duration_weeks": 2,
+    "difficulty": "Beginner",
+    "url": "https://infyspringboard.onwingspan.com"
+  },
+  {
+    "course_id": "CRS-115",
+    "title": "Next.js 14 Full Stack Architecture & TypeScript",
+    "provider": "Coursera",
+    "skills_taught": ["Next.js", "TypeScript", "React", "Tailwind CSS"],
+    "duration_weeks": 5,
+    "difficulty": "Advanced",
+    "url": "https://www.coursera.org"
+  }
+]
