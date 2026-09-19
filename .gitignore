@@ -1,7 +1,8 @@
-# Secrets and local environment files
+# Environment and secrets
 .env
 .env.*
 !.env.example
+*.env.local
 
 # Python
 __pycache__/
@@ -15,15 +16,20 @@ htmlcov/
 .venv/
 venv/
 env/
+ENV/
 backend/venv/
 backend/Lib/
 backend/Scripts/
 backend/Include/
 backend/pyvenv.cfg
+*.so
+.Python
 
-# Node.js and Vite
+# Node.js and Vite / Frontend
 node_modules/
 dist/
+build/
+.npm
 frontend/**/dist/
 frontend/**/.vite/
 npm-debug.log*
@@ -34,14 +40,12 @@ pnpm-debug.log*
 # Project build output
 .dist/
 
-# IDE settings
-.vscode/*
+# IDE and Operating system files
+.vscode/
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
 *.iml
-
-# Operating system files
 .DS_Store
 Thumbs.db
 Desktop.ini
