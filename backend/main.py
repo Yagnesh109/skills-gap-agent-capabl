@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
 # Import Profile Parsing services
 from profile_parsing.document_extractor import IMAGE_EXTENSIONS, extract_text_from_file
 from profile_parsing.gemini_client import parse_resume_image_with_gemini, parse_resume_with_gemini
+from profile_parsing.schemas import UserProfile
 
 # Dynamically import routers from modular agent directories
 skill_match_module = importlib.import_module("skill-match-agent.router")
@@ -54,15 +55,10 @@ class TrainingRecommendRequest(BaseModel):
     missing_skills: List[str] = Field(default_factory=list, description="List of missing skills to query training recommendations for")
 
 
-class LangGraphUserProfile(BaseModel):
-    """Schema accepted by the end-to-end LangGraph orchestration endpoint."""
-    education: Optional[str] = Field(default=None, description="Candidate education / qualification")
+class LangGraphUserProfile(UserProfile):
+    """Canonical profile accepted by the end-to-end LangGraph endpoint."""
     skills: List[str] = Field(..., description="Candidate's current skills", min_length=0)
-    location: Optional[str] = Field(default=None, description="Preferred job location")
-    interests: Optional[List[str]] = Field(default_factory=list, description="Candidate's interest domains")
-    target_role: Optional[str] = Field(default=None, description="Target role / keywords to search for")
     user_id: Optional[str] = Field(default="user_001", description="Optional user identifier")
-    name: Optional[str] = Field(default="Candidate", description="Optional candidate name")
 
 
 def _import_orchestration():
@@ -224,12 +220,25 @@ async def run_skill_gap_graph(
         cleaned = {k: v for k, v in entry.items() if not k.startswith("_")}
         ai_list.append(cleaned)
 
+    final_profile = final_state.get("user_profile", profile)
+    if hasattr(final_profile, "model_dump"):
+        final_profile = final_profile.model_dump(mode="json")
+
     return {
-        "user_profile": final_state.get("user_profile", profile_dict),
+        "user_profile": final_profile,
+        "profile": final_profile,
         "jobs": final_state.get("jobs", []),
         "job_source": final_state.get("job_source", "unknown"),
         "matching_results": final_state.get("matching_results", []),
+        "matched_jobs": final_state.get("matched_jobs", final_state.get("matching_results", [])),
         "gap_analyses": final_state.get("gap_analyses", []),
+        "skill_gaps": final_state.get("skill_gaps", final_state.get("gap_analyses", [])),
+        "current_jobs": final_state.get("current_jobs", 0),
+        "opportunity_analysis": final_state.get(
+            "opportunity_analysis",
+            {"current_jobs": 0, "opportunities": [], "combinations": []},
+        ),
+        "training_recommendations": final_state.get("training_recommendations", []),
         "ai_reasoning": ai_list,
         "errors": final_state.get("errors", []),
     }

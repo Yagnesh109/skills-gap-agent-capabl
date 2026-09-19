@@ -85,11 +85,17 @@ class SkillMatchingService:
         cand_norm_set = set(cand_norm_map.keys())
         job_norm_set = set(job_norm_map.keys())
 
-        exact_matched_norms = job_norm_set.intersection(cand_norm_set)
-        unmatched_norms = list(job_norm_set - exact_matched_norms)
+        # Preserve the job's declared order so output and scoring are repeatable.
+        exact_matched_norms = [
+            norm for norm in job_norm_map if norm in cand_norm_set
+        ]
+        unmatched_norms = [
+            norm for norm in job_norm_map if norm not in cand_norm_set
+        ]
 
         matched_skills_display = [job_norm_map[norm] for norm in exact_matched_norms]
         missing_skills_display = []
+        semantic_matched_skills = []
 
         total_required = len(job_norm_set)
         exact_matched_count = len(exact_matched_norms)
@@ -117,10 +123,12 @@ class SkillMatchingService:
                 if max_sim >= self.similarity_threshold:
                     # Meets semantic equivalence threshold (e.g. 'React' vs 'React.js development')
                     matched_skills_display.append(orig_name)
+                    semantic_matched_skills.append(orig_name)
                     similarity_scores_per_req.append(max_sim)
                 else:
                     missing_skills_display.append(orig_name)
-                    similarity_scores_per_req.append(max_sim)
+                    # Below-threshold similarity is not a partial match.
+                    similarity_scores_per_req.append(0.0)
         else:
             for req_norm in unmatched_norms:
                 missing_skills_display.append(job_norm_map[req_norm])
@@ -156,7 +164,8 @@ class SkillMatchingService:
             semantic_score=semantic_score,
             matched_skills=matched_skills_display,
             missing_skills=missing_skills_display,
-            unmatched_skills=missing_skills_display
+            unmatched_skills=missing_skills_display,
+            semantic_matched_skills=semantic_matched_skills,
         )
 
     def rank_jobs(

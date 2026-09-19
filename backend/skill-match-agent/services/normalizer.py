@@ -89,8 +89,9 @@ SKILL_ALIASES: Dict[str, str] = {
     "gcp": "gcp",
     "google cloud": "gcp",
     "git": "git",
-    "github": "git",
-    "version control": "git",
+    "github": "github",
+    "gitlab": "gitlab",
+    "version control": "version control",
     "ci/cd": "ci/cd",
     "cicd": "ci/cd",
 

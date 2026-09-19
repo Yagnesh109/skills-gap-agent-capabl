@@ -93,7 +93,12 @@ def generate_roi_reasoning(missing_skills, course_title, duration, jobs_unlocked
                 print(f"LLM API Error: {e}")
                 return fallback_text(missing_skills, course_title, duration, jobs_unlocked)
 
-def recommend_training(missing_skills: list, top_job_matches: list = None):
+def recommend_training(
+    missing_skills: list,
+    top_job_matches: list = None,
+    user_profile: dict = None,
+    opportunity_analysis: dict = None,
+):
     """Main execution function for the Training Recommendation Agent."""
     courses = load_courses()
     

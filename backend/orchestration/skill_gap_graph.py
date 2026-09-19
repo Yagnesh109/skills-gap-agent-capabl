@@ -35,9 +35,19 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from typing_extensions import TypedDict
+
+try:
+    from profile_parsing.schemas import UserProfile
+except (ImportError, ValueError):
+    from backend.profile_parsing.schemas import UserProfile
+
+try:
+    from .opportunity_analysis import analyze_opportunities
+except (ImportError, ValueError):
+    from opportunity_analysis import analyze_opportunities
 
 logger = logging.getLogger(__name__)
 
@@ -115,21 +125,30 @@ class SkillGapState(TypedDict, total=False):
     """Typed workflow state for the end-to-end skill-gap pipeline.
 
     Keys are written incrementally by each node:
-      - user_profile:  input user_profile dict (education, skills, location, interests, target_role)
+    - user_profile:  validated canonical UserProfile
       - jobs:          list[dict] of normalized job postings from JobSourceService
       - job_source:    "jooble" | "demo" — origin tag from job retrieval
       - user_skills:   deduped list[str] of user skills (derived from user_profile)
       - matching_results: list[dict] of ranked match results from SkillMatchingService
       - gap_analyses:  list[dict] of deterministic gap analyses (per job)
+    - current_jobs:  count of jobs with a positive existing matching score
+    - opportunity_analysis: deterministic individual and combination opportunities
+    - training_recommendations: up to three course recommendations
       - ai_reasoning:  list[dict] of structured Gemini reasoning (one per job; fallback-safe)
       - errors:        list[{node, message}] of non-fatal informational errors
     """
-    user_profile: Dict[str, Any]
+    user_profile: UserProfile
     jobs: List[Dict[str, Any]]
     job_source: str
     user_skills: List[str]
     matching_results: List[Dict[str, Any]]
     gap_analyses: List[Dict[str, Any]]
+    current_jobs: int
+    opportunity_analysis: Dict[str, Any]
+    training_recommendations: List[Dict[str, Any]]
+    profile: UserProfile
+    matched_jobs: List[Dict[str, Any]]
+    skill_gaps: List[Dict[str, Any]]
     ai_reasoning: List[Dict[str, Any]]
     errors: List[Dict[str, str]]
 
@@ -150,6 +169,7 @@ class _ServiceHolder:
         self._dedupe_skills_fn = None
         self._GeminiServiceCls = None
         self._default_gemini_svc = None
+        self._recommend_training_fn = None
 
     def ensure_loaded(self) -> None:
         if self._job_source_svc is None:
@@ -163,6 +183,10 @@ class _ServiceHolder:
             self._dedupe_skills_fn = ds
             self._GeminiServiceCls = gcls
             self._default_gemini_svc = gsvc
+        if self._recommend_training_fn is None:
+            import importlib
+            training_mod = importlib.import_module("training-agent.agent")
+            self._recommend_training_fn = training_mod.recommend_training
 
     @property
     def job_source_service(self):
@@ -199,6 +223,11 @@ class _ServiceHolder:
         self.ensure_loaded()
         return self._default_gemini_svc
 
+    @property
+    def recommend_training(self):
+        self.ensure_loaded()
+        return self._recommend_training_fn
+
 
 _services = _ServiceHolder()
 
@@ -211,6 +240,7 @@ def set_service_overrides(
     analyze_single_fn=None,
     dedupe_skills_fn=None,
     gemini_service=None,
+    training_fn=None,
 ) -> None:
     """Inject dependencies for unit tests. Pass None for any you don't override."""
     if job_source_service is not None:
@@ -225,6 +255,8 @@ def set_service_overrides(
         _services._dedupe_skills_fn = dedupe_skills_fn
     if gemini_service is not None:
         _services._default_gemini_svc = gemini_service
+    if training_fn is not None:
+        _services._recommend_training_fn = training_fn
 
 
 def _reset_service_overrides() -> None:
@@ -236,6 +268,18 @@ def _reset_service_overrides() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _coerce_user_profile(profile: Union[UserProfile, Mapping[str, Any], None]) -> UserProfile:
+    """Validate canonical profiles while accepting legacy dict workflow callers."""
+    if isinstance(profile, UserProfile):
+        return profile
+    return UserProfile.model_validate(dict(profile or {}))
+
+
+def _profile_dict(state: SkillGapState) -> Dict[str, Any]:
+    """Expose a plain mapping only at existing service boundaries."""
+    return _coerce_user_profile(state.get("user_profile")).model_dump(mode="python")
 
 
 def _record_error(state: SkillGapState, node: str, message: str) -> None:
@@ -258,7 +302,7 @@ def job_search_node(state: SkillGapState) -> Dict[str, Any]:
       - Seamless 50-demo-jobs fallback on any failure
     So this node just calls it and records the results + source tag.
     """
-    profile: Dict[str, Any] = state.get("user_profile") or {}
+    profile = _profile_dict(state)
     skills_raw = profile.get("skills") or []
     interests_raw = profile.get("interests") or []
     keywords = profile.get("target_role") or ""
@@ -313,7 +357,7 @@ def skill_matching_node(state: SkillGapState) -> Dict[str, Any]:
     Uses `matching_service.rank_jobs(candidate_skills, jobs)`.
     Writes: `user_skills` (deduped) and `matching_results`.
     """
-    profile: Dict[str, Any] = state.get("user_profile") or {}
+    profile = _profile_dict(state)
     skills_raw = profile.get("skills") or []
     jobs: List[Dict[str, Any]] = list(state.get("jobs") or [])
 
@@ -379,6 +423,7 @@ def skill_matching_node(state: SkillGapState) -> Dict[str, Any]:
     return {
         "user_skills": deduped_skills,
         "matching_results": match_dicts,
+        "matched_jobs": match_dicts,
     }
 
 
@@ -390,8 +435,23 @@ def gap_analysis_node(state: SkillGapState) -> Dict[str, Any]:
     """
     user_skills: List[str] = list(state.get("user_skills") or [])
     matches: List[Dict[str, Any]] = list(state.get("matching_results") or [])
+    jobs: List[Dict[str, Any]] = list(state.get("jobs") or [])
+
+    def _opportunity_result(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        missing_skills = [
+            skill
+            for analysis in analyses
+            for skill in (analysis.get("missing_skills") or [])
+        ]
+        return analyze_opportunities(
+            candidate_skills=user_skills,
+            missing_skills=missing_skills,
+            jobs=jobs,
+            matching_service=_services.matching_service,
+        )
+
     jobs_by_id: Dict[str, Dict[str, Any]] = {
-        j.get("job_id"): j for j in (state.get("jobs") or [])
+        j.get("job_id"): j for j in jobs
     }
 
     if not matches:
@@ -400,7 +460,14 @@ def gap_analysis_node(state: SkillGapState) -> Dict[str, Any]:
             "node": "gap_analysis",
             "message": "No matching results available; skipping gap analysis.",
         })
-        return {"gap_analyses": [], "errors": errors}
+        opportunity = _opportunity_result([])
+        return {
+            "gap_analyses": [],
+            "skill_gaps": [],
+            "current_jobs": opportunity["current_jobs"],
+            "opportunity_analysis": opportunity,
+            "errors": errors,
+        }
 
     # Limit to top 10 to keep Gemini traffic bounded
     top_matches = matches[:10]
@@ -432,10 +499,121 @@ def gap_analysis_node(state: SkillGapState) -> Dict[str, Any]:
         logger.info("gap_analysis_node: %s", msg[:200])
         errors = list(state.get("errors") or [])
         errors.append({"node": "gap_analysis", "message": msg})
-        return {"gap_analyses": [], "errors": errors}
+        return {"gap_analyses": [], "skill_gaps": [], "errors": errors}
 
     analyses_dicts = [dict(a) for a in analyses]
-    return {"gap_analyses": analyses_dicts}
+    opportunity = _opportunity_result(analyses_dicts)
+    return {
+        "gap_analyses": analyses_dicts,
+        "skill_gaps": analyses_dicts,
+        "current_jobs": opportunity["current_jobs"],
+        "opportunity_analysis": opportunity,
+    }
+
+
+def _training_skill_key(skill: Any) -> str:
+    normalized = _services.dedupe_skills([str(skill or "")])
+    return normalized[0].casefold() if normalized else ""
+
+
+def training_recommendation_node(state: SkillGapState) -> Dict[str, Any]:
+    """NODE 5 — Reuse the standalone Training Recommendation Agent."""
+    analyses: List[Dict[str, Any]] = list(state.get("gap_analyses") or [])
+    jobs: List[Dict[str, Any]] = list(state.get("jobs") or [])
+    matches: List[Dict[str, Any]] = list(state.get("matching_results") or [])
+    opportunity = state.get("opportunity_analysis") or {}
+    profile = _profile_dict(state)
+
+    missing_skills = _services.dedupe_skills([
+        skill
+        for analysis in analyses
+        for skill in (analysis.get("missing_skills") or [])
+    ])
+    if not missing_skills or not jobs or not matches:
+        return {"training_recommendations": []}
+
+    jobs_by_id = {job.get("job_id"): job for job in jobs}
+    top_jobs = [
+        jobs_by_id[match.get("job_id")]
+        for match in matches[:10]
+        if match.get("job_id") in jobs_by_id
+    ]
+    if not top_jobs:
+        return {"training_recommendations": []}
+
+    opportunity_by_skill = {
+        _training_skill_key(entry.get("skill")): entry
+        for entry in (opportunity.get("opportunities") or [])
+    }
+    ordered_missing = sorted(
+        missing_skills,
+        key=lambda skill: (
+            -int((opportunity_by_skill.get(_training_skill_key(skill)) or {}).get("jobs_unlocked", 0)),
+            _training_skill_key(skill),
+        ),
+    )
+
+    import importlib
+    training_module = importlib.import_module("training-agent.agent")
+    courses = training_module.load_courses()
+    courses_by_name = {
+        course.get("title"): course
+        for course in courses
+        if isinstance(course, dict) and course.get("title")
+    }
+
+    recommendations: List[Dict[str, Any]] = []
+    seen_courses = set()
+    for skill in ordered_missing[:3]:
+        try:
+            result = _services.recommend_training(
+                missing_skills=[skill],
+                top_job_matches=top_jobs,
+                user_profile=profile,
+                opportunity_analysis=opportunity,
+            ) or {}
+        except Exception as exc:
+            logger.info("training_recommendation_node failed for %s: %s", skill, type(exc).__name__)
+            continue
+
+        for recommendation in result.get("recommendations") or []:
+            course_name = recommendation.get("course_name") or ""
+            if not course_name or course_name in seen_courses:
+                continue
+            seen_courses.add(course_name)
+            course = courses_by_name.get(course_name, {})
+            course_skill_keys = {
+                _training_skill_key(course_skill)
+                for course_skill in course.get("skills_taught") or []
+            }
+            course_opportunities = [
+                entry for key, entry in opportunity_by_skill.items()
+                if key in course_skill_keys
+            ]
+            jobs_unlocked = max(
+                [int(entry.get("jobs_unlocked", 0)) for entry in course_opportunities]
+                or [0]
+            )
+            duration = recommendation.get("duration_weeks")
+            try:
+                duration_value = float(duration)
+            except (TypeError, ValueError):
+                duration_value = 0.0
+            output = {
+                "course_name": course_name,
+                "provider": recommendation.get("provider", ""),
+                "duration_weeks": duration,
+                "jobs_unlocked": jobs_unlocked,
+                "learning_impact": round(jobs_unlocked / duration_value, 2) if duration_value > 0 else None,
+                "reasoning": recommendation.get("roi_reasoning", ""),
+                "url": recommendation.get("url", ""),
+            }
+            recommendations.append(output)
+            break
+        if len(recommendations) >= 3:
+            break
+
+    return {"training_recommendations": recommendations}
 
 
 def gemini_reasoning_node(state: SkillGapState) -> Dict[str, Any]:
@@ -449,7 +627,7 @@ def gemini_reasoning_node(state: SkillGapState) -> Dict[str, Any]:
     strengths / priority_gaps reference only the deterministic
     matched_skills / missing_skills respectively.
     """
-    profile: Dict[str, Any] = state.get("user_profile") or {}
+    profile = _profile_dict(state)
     jobs_by_id: Dict[str, Dict[str, Any]] = {
         j.get("job_id"): j for j in (state.get("jobs") or [])
     }
@@ -562,12 +740,14 @@ def build_skill_gap_graph():
     workflow.add_node("skill_matching", skill_matching_node)
     workflow.add_node("gap_analysis", gap_analysis_node)
     workflow.add_node("gemini_reasoning", gemini_reasoning_node)
+    workflow.add_node("training_recommendations", training_recommendation_node)
 
     workflow.set_entry_point("job_search")
     workflow.add_edge("job_search", "skill_matching")
     workflow.add_edge("skill_matching", "gap_analysis")
     workflow.add_edge("gap_analysis", "gemini_reasoning")
-    workflow.add_edge("gemini_reasoning", END)
+    workflow.add_edge("gemini_reasoning", "training_recommendations")
+    workflow.add_edge("training_recommendations", END)
 
     return workflow.compile()
 
@@ -584,23 +764,50 @@ except Exception:  # pragma: no cover - fallback if LangGraph import fails
 # ---------------------------------------------------------------------------
 
 
-def run_skill_gap_workflow(user_profile: Dict[str, Any]) -> SkillGapState:
+def run_skill_gap_workflow(
+    user_profile: Union[UserProfile, Mapping[str, Any]],
+) -> SkillGapState:
     """Execute the full LangGraph workflow synchronously and return the final state."""
+    canonical_profile = _coerce_user_profile(user_profile)
     initial: SkillGapState = {
-        "user_profile": dict(user_profile),
+        "user_profile": canonical_profile,
+        "profile": canonical_profile,
         "jobs": [],
         "user_skills": [],
         "matching_results": [],
+        "matched_jobs": [],
         "gap_analyses": [],
+        "skill_gaps": [],
+        "current_jobs": 0,
+        "opportunity_analysis": {
+            "current_jobs": 0,
+            "opportunities": [],
+            "combinations": [],
+        },
+        "training_recommendations": [],
         "ai_reasoning": [],
         "errors": [],
     }
     graph = skill_gap_graph if skill_gap_graph is not None else build_skill_gap_graph()
     result = graph.invoke(initial)
     # Ensure all required keys exist in final state (invoke may not populate empties)
-    for k in ("jobs", "user_skills", "matching_results", "gap_analyses", "ai_reasoning", "errors"):
+    for k in ("jobs", "user_skills", "matching_results", "matched_jobs", "gap_analyses", "skill_gaps", "ai_reasoning", "errors"):
         if k not in result:
-            result[k] = [] if k != "user_profile" else dict(user_profile)
+            result[k] = []
+    if "current_jobs" not in result:
+        result["current_jobs"] = 0
+    if "opportunity_analysis" not in result:
+        result["opportunity_analysis"] = {
+            "current_jobs": result["current_jobs"],
+            "opportunities": [],
+            "combinations": [],
+        }
+    if "training_recommendations" not in result:
+        result["training_recommendations"] = []
+    if "profile" not in result:
+        result["profile"] = canonical_profile
+    if "user_profile" not in result:
+        result["user_profile"] = canonical_profile
     return result
 
 

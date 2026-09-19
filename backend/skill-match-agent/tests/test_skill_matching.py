@@ -1,6 +1,9 @@
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import numpy as np
 
 # Add backend and skill-match-agent directories to sys.path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -13,7 +16,9 @@ for p in [str(BASE_DIR), str(BACKEND_DIR), str(AGENT_DIR)]:
 
 from schemas import JobPosting, UserProfile, SkillMatchRequest
 from services.normalizer import normalize_skill, normalize_skills
+import services.matching_service as service_module
 from services.matching_service import SkillMatchingService, matching_service
+from services.embedding_service import DEFAULT_SIMILARITY_THRESHOLD
 from data.demo_jobs import get_demo_jobs
 from fastapi.testclient import TestClient
 from main import app
@@ -106,6 +111,92 @@ class TestSkillMatchingAgent(unittest.TestCase):
         self.assertIn("javascript", matched_lower)
         self.assertIn("redux", matched_lower)
 
+    def test_4b_distinct_technology_aliases_do_not_collapse(self):
+        self.assertNotEqual(normalize_skill("Git"), normalize_skill("GitHub"))
+        self.assertNotEqual(normalize_skill("Git"), normalize_skill("GitLab"))
+        self.assertNotEqual(normalize_skill("SQL"), normalize_skill("PostgreSQL"))
+        self.assertNotEqual(normalize_skill("SQL"), normalize_skill("MySQL"))
+        self.assertNotEqual(normalize_skill("Python"), normalize_skill("Django"))
+
+    def test_4c_exact_and_missing_skills_are_deterministic(self):
+        job = JobPosting(
+            job_id="TEST-001",
+            title="Python Role",
+            company="Example",
+            location="Pune",
+            required_skills=["Python", "SQL"],
+        )
+
+        with patch.object(service_module.embedding_service, "encode") as encode, patch.object(
+            service_module.embedding_service,
+            "compute_similarity_matrix",
+            return_value=np.array([[0.1]], dtype=np.float32),
+        ):
+            encode.side_effect = [
+                np.ones((1, 384), dtype=np.float32),
+                np.ones((1, 384), dtype=np.float32),
+            ]
+            result = self.service.calculate_job_match([" PYTHON "], job)
+
+        self.assertEqual(result.matched_skills, ["Python"])
+        self.assertEqual(result.missing_skills, ["SQL"])
+        self.assertEqual(result.semantic_matched_skills, [])
+
+    def test_4d_below_threshold_semantics_do_not_add_score(self):
+        job = JobPosting(
+            job_id="TEST-002",
+            title="Python Role",
+            company="Example",
+            location="Pune",
+            required_skills=["Python", "Django"],
+        )
+        service = SkillMatchingService(similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD)
+        low_similarity = np.array([[0.1]], dtype=np.float32)
+
+        with patch.object(service_module.embedding_service, "encode") as encode, patch.object(
+            service_module.embedding_service,
+            "compute_similarity_matrix",
+            return_value=low_similarity,
+        ):
+            encode.side_effect = [
+                np.ones((1, 384), dtype=np.float32),
+                np.ones((1, 384), dtype=np.float32),
+            ]
+            result = service.calculate_job_match(["Python"], job)
+
+        self.assertEqual(result.matched_skills, ["Python"])
+        self.assertEqual(result.missing_skills, ["Django"])
+        self.assertEqual(result.semantic_matched_skills, [])
+        self.assertEqual(result.semantic_score, 50.0)
+        self.assertEqual(result.match_score, 50.0)
+
+    def test_4e_accepted_semantic_match_is_reported(self):
+        job = JobPosting(
+            job_id="TEST-003",
+            title="Python Web Role",
+            company="Example",
+            location="Pune",
+            required_skills=["Python", "Django"],
+        )
+        service = SkillMatchingService(similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD)
+        high_similarity = np.array([[0.9]], dtype=np.float32)
+
+        with patch.object(service_module.embedding_service, "encode") as encode, patch.object(
+            service_module.embedding_service,
+            "compute_similarity_matrix",
+            return_value=high_similarity,
+        ):
+            encode.side_effect = [
+                np.ones((1, 384), dtype=np.float32),
+                np.ones((1, 384), dtype=np.float32),
+            ]
+            result = service.calculate_job_match(["Python"], job)
+
+        self.assertEqual(result.matched_skills, ["Python", "Django"])
+        self.assertEqual(result.missing_skills, [])
+        self.assertEqual(result.semantic_matched_skills, ["Django"])
+
+
     def test_5_multiple_jobs_ranked_correctly(self):
         """Scenario 5: Multiple jobs ranked in strictly descending order of match_score."""
         candidate_skills = ["Python", "FastAPI", "Docker", "PostgreSQL"]
@@ -168,7 +259,7 @@ class TestSkillMatchingAgent(unittest.TestCase):
 
         # For Python/Django/SQL/Git, JOB-001 should be #1 with high score
         self.assertEqual(top_match["job_id"], "JOB-001")
-        self.assertGreater(top_match["match_score"], 80.0)
+        self.assertGreaterEqual(top_match["match_score"], 80.0)
 
     def test_8_fastapi_endpoint_with_skill_match_request_top_k(self):
         """Scenario 8: Test FastAPI POST /api/skill-match with SkillMatchRequest and top_k filter."""

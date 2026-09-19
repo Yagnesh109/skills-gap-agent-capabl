@@ -56,6 +56,55 @@ except (ImportError, ModuleNotFoundError):
 class TestGapAnalysisServiceCore(unittest.TestCase):
     """Unit tests for the deterministic gap analysis service layer (no HTTP)."""
 
+    def test_00_complete_match_is_deterministic(self):
+        result = analyze_single_job_gap(
+            user_skills=[" Python ", "SQL", "git"],
+            job_id="JOB-COMPLETE",
+            job_title="Backend Developer",
+            required_skills=["Python", " SQL ", "Git"],
+        )
+
+        self.assertEqual(result["matched_skills"], ["Git", "Python", "SQL"])
+        self.assertEqual(result["missing_skills"], [])
+
+    def test_00b_empty_and_null_skill_lists_are_safe(self):
+        empty_candidate = analyze_single_job_gap(
+            user_skills=None,
+            job_id="JOB-EMPTY-CANDIDATE",
+            job_title="Backend Developer",
+            required_skills=["Python"],
+        )
+        empty_requirements = analyze_single_job_gap(
+            user_skills=["Python"],
+            job_id="JOB-EMPTY-REQUIREMENTS",
+            job_title="General Role",
+            required_skills=None,
+        )
+
+        self.assertEqual(empty_candidate["matched_skills"], [])
+        self.assertEqual(empty_candidate["missing_skills"], ["Python"])
+        self.assertEqual(empty_requirements["matched_skills"], [])
+        self.assertEqual(empty_requirements["missing_skills"], [])
+
+    def test_00c_related_technologies_remain_distinct(self):
+        git_result = analyze_single_job_gap(
+            user_skills=["Git"],
+            job_id="JOB-GIT",
+            job_title="Version Control Role",
+            required_skills=["GitHub"],
+        )
+        sql_result = analyze_single_job_gap(
+            user_skills=["SQL"],
+            job_id="JOB-SQL",
+            job_title="Database Role",
+            required_skills=["PostgreSQL"],
+        )
+
+        self.assertEqual(git_result["matched_skills"], [])
+        self.assertEqual(git_result["missing_skills"], ["GitHub"])
+        self.assertEqual(sql_result["matched_skills"], [])
+        self.assertEqual(sql_result["missing_skills"], ["PostgreSQL"])
+
     # ------------------------------------------------------------------
     # Test 1 — Missing skills: user has partial overlap
     # ------------------------------------------------------------------

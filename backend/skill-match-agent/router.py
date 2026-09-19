@@ -11,7 +11,9 @@ try:
     )
     from .services.matching_service import matching_service
     from .services.job_source_service import job_source_service
+    from .services.job_normalizer import normalize_demo_jobs
     from .services.jooble_service import jooble_service
+    from .services.location_compatibility import classify_location_compatibility
     from .data.demo_jobs import get_demo_jobs
 except (ImportError, ValueError):
     from schemas import (
@@ -23,7 +25,9 @@ except (ImportError, ValueError):
     )
     from services.matching_service import matching_service
     from services.job_source_service import job_source_service
+    from services.job_normalizer import normalize_demo_jobs
     from services.jooble_service import jooble_service
+    from services.location_compatibility import classify_location_compatibility
     from data.demo_jobs import get_demo_jobs
 
 router = APIRouter(
@@ -101,6 +105,7 @@ async def match_skills(
     # 3. Ensure source attribute is tagged on each result
     for res in ranked_results:
         res.source = source
+        res.location_compatibility = classify_location_compatibility(location, res.location)
 
     return ranked_results
 
@@ -138,7 +143,7 @@ async def get_jobs_endpoint(
 )
 async def list_demo_jobs():
     """Returns the complete dataset of 50 local demo job postings."""
-    return get_demo_jobs()
+    return normalize_demo_jobs(get_demo_jobs())
 
 
 @router.get(

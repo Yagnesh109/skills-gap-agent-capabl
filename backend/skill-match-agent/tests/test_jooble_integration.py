@@ -16,7 +16,8 @@ for p in [str(BASE_DIR), str(BACKEND_DIR), str(AGENT_DIR)]:
 from config import settings
 from schemas import JobPosting, UserProfile, SkillMatchRequest, JobMatchResult
 from services.skill_extractor import extract_skills_from_text, clean_html_text
-from services.job_normalizer import normalize_jooble_job, normalize_jooble_jobs
+from services.job_normalizer import normalize_demo_jobs, normalize_jooble_job, normalize_jooble_jobs
+from services.location_compatibility import classify_location_compatibility
 from services.jooble_service import JoobleService, jooble_service
 from services.job_source_service import JobSourceService, job_source_service
 from services.matching_service import matching_service
@@ -91,6 +92,19 @@ class TestJoobleIntegration(unittest.TestCase):
         self.assertIn("PostgreSQL", job.required_skills)
         self.assertIn("Docker", job.required_skills)
 
+    def test_3b_location_compatibility_is_deterministic(self):
+        self.assertEqual(classify_location_compatibility("Pune", "Pune"), "same_city")
+        self.assertEqual(classify_location_compatibility("Pune", "Mumbai"), "different_city")
+        self.assertEqual(classify_location_compatibility("Pune", "Remote - India"), "remote")
+        self.assertEqual(classify_location_compatibility("", ""), "unknown")
+
+    def test_3c_demo_jobs_use_shared_normalization_pipeline(self):
+        jobs = normalize_demo_jobs(get_demo_jobs()[:1])
+        self.assertEqual(jobs[0].source, "demo")
+        self.assertEqual(jobs[0].title, "Python Developer")
+        self.assertEqual(jobs[0].location, "Pune")
+        self.assertTrue(jobs[0].required_skills)
+
     def test_4_skill_extraction_accuracy(self):
         """Test 4: Deterministic skill extraction handles punctuation, aliases, and HTML."""
         text = "Require <b>React.js</b>, JS, Python 3, Node.js, and CI/CD experience."
@@ -157,7 +171,10 @@ class TestJoobleIntegration(unittest.TestCase):
         with patch.object(target_client, "search_jobs", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = MOCK_RAW_JOOBLE_JOBS
             try:
-                payload = {"skills": ["Python", "Django", "PostgreSQL"]}
+                payload = {
+                    "skills": ["Python", "Django", "PostgreSQL"],
+                    "location": "Pune",
+                }
                 response = self.client.post("/api/skill-match", json=payload)
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers.get("X-Job-Source"), "jooble")
@@ -165,6 +182,7 @@ class TestJoobleIntegration(unittest.TestCase):
                 results = response.json()
                 self.assertEqual(len(results), 2)
                 self.assertEqual(results[0]["source"], "jooble")
+                self.assertEqual(results[0]["location_compatibility"], "same_city")
                 self.assertTrue(results[0]["job_id"].startswith("JOOBLE-"))
             finally:
                 target_client._api_key = original_key

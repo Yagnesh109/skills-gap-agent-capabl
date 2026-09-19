@@ -1,13 +1,11 @@
 import io
 import json
 import re
-from copy import deepcopy
-
 from PIL import Image
 import google.generativeai as genai
 
-from .config import get_fallback_gemini_models, get_gemini_api_key, get_gemini_model
-from .schemas import EMPTY_PROFILE
+from .config import get_fallback_gemini_models, get_gemini_api_key
+from .schemas import UserProfile
 
 
 SKILL_NORMALIZATION = {
@@ -50,18 +48,19 @@ def normalize_skill(skill: str) -> str:
 
 
 def normalize_profile_dict(raw_data: dict) -> dict:
-    """Ensure response always matches the defined structure and defaults."""
-    normalized = deepcopy(EMPTY_PROFILE)
+    """Normalize legacy parser data into the canonical UserProfile shape."""
+    normalized = UserProfile().model_dump(mode="python")
     if not isinstance(raw_data, dict):
         return normalized
 
     personal_info = raw_data.get("personal_info", {})
-    normalized["personal_info"] = {
-        "name": str(personal_info.get("name", "") or ""),
-        "email": str(personal_info.get("email", "") or ""),
-        "phone": str(personal_info.get("phone", "") or ""),
-        "location": str(personal_info.get("location", "") or ""),
-    }
+    if not isinstance(personal_info, dict):
+        personal_info = {}
+    normalized["name"] = str(raw_data.get("name", personal_info.get("name", "")) or "")
+    normalized["email"] = str(raw_data.get("email", personal_info.get("email", "")) or "")
+    normalized["phone"] = str(raw_data.get("phone", personal_info.get("phone", "")) or "")
+    normalized["location"] = str(raw_data.get("location", personal_info.get("location", "")) or "")
+    normalized["target_role"] = str(raw_data.get("target_role", "") or "")
 
     normalized["education"] = [
         {
@@ -113,7 +112,7 @@ def normalize_profile_dict(raw_data: dict) -> dict:
         str(item) for item in (raw_data.get("interests", []) or []) if isinstance(item, str)
     ]
 
-    return normalized
+    return UserProfile.model_validate(normalized).model_dump(mode="python")
 
 
 def extract_json_from_text(text: str) -> dict:
@@ -146,15 +145,16 @@ def extract_fallback_profile_from_text(text: str) -> dict:
     detected_skills = [skill for skill in common_skills if re.search(r"\b" + re.escape(skill) + r"\b", text, re.I)]
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    name = lines[0] if lines else "Candidate"
+    name = lines[0] if lines else ""
     if name and ("resume" in name.lower() or "curriculum" in name.lower() or len(name) > 50):
-        name = "Candidate"
+        name = ""
 
-    profile = deepcopy(EMPTY_PROFILE)
-    profile["personal_info"]["name"] = name[:50]
-    profile["personal_info"]["email"] = email_match.group(0) if email_match else ""
-    profile["personal_info"]["phone"] = phone_match.group(0) if phone_match else ""
-    profile["skills"] = detected_skills if detected_skills else ["Software Engineering"]
+    profile = UserProfile(
+        name=name[:50],
+        email=email_match.group(0) if email_match else "",
+        phone=phone_match.group(0) if phone_match else "",
+    ).model_dump(mode="python")
+    profile["skills"] = detected_skills
 
     # Heuristic extraction for education when AI is offline/quota reached
     edu_keywords = ["b.tech", "b.e", "bachelor", "master", "m.tech", "degree", "university", "college", "diploma", "computer science"]
@@ -163,7 +163,7 @@ def extract_fallback_profile_from_text(text: str) -> dict:
         if any(kw in line.lower() for kw in edu_keywords):
             education_list.append({
                 "degree": line[:80],
-                "field": "Computer Science & Engineering" if "computer" in line.lower() else "",
+                "field": "",
                 "institution": "",
                 "graduation_year": ""
             })
@@ -186,7 +186,7 @@ def extract_fallback_profile_from_text(text: str) -> dict:
                 break
     profile["experience"] = experience_list
 
-    return profile
+    return UserProfile.model_validate(profile).model_dump(mode="python")
 
 
 def parse_resume_with_gemini(resume_text: str) -> dict:
@@ -275,18 +275,12 @@ def parse_resume_image_with_gemini(image_bytes: bytes, filename: str = "") -> di
 
     api_key = get_gemini_api_key()
     if not api_key or api_key.startswith("your_") or api_key == "dummy_test_key":
-        fallback = deepcopy(EMPTY_PROFILE)
-        fallback["personal_info"]["name"] = "Candidate Profile"
-        fallback["skills"] = ["Software Development", "Problem Solving"]
-        return fallback
+        return UserProfile().model_dump(mode="python")
 
     try:
         genai.configure(api_key=api_key)
     except Exception:
-        fallback = deepcopy(EMPTY_PROFILE)
-        fallback["personal_info"]["name"] = "Candidate Profile"
-        fallback["skills"] = ["Software Development", "Problem Solving"]
-        return fallback
+        return UserProfile().model_dump(mode="python")
 
     candidate_models = get_fallback_gemini_models()
     prompt = """
@@ -341,10 +335,7 @@ def parse_resume_image_with_gemini(image_bytes: bytes, filename: str = "") -> di
 
     err_str = str(last_error).lower() if last_error else ""
     if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "api_key_invalid" in err_str or "api key not valid" in err_str:
-        fallback = deepcopy(EMPTY_PROFILE)
-        fallback["personal_info"]["name"] = "Candidate Profile"
-        fallback["skills"] = ["Software Development", "Problem Solving"]
-        return fallback
+        return UserProfile().model_dump(mode="python")
     raise ValueError(f"Gemini API image request failed: {last_error}")
 
 

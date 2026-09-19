@@ -5,12 +5,12 @@ try:
     from ..schemas import JobPosting
     from ..data.demo_jobs import get_demo_jobs
     from .jooble_service import jooble_service
-    from .job_normalizer import normalize_jooble_jobs
+    from .job_normalizer import normalize_demo_jobs, normalize_jooble_jobs
 except (ImportError, ValueError):
     from schemas import JobPosting
     from data.demo_jobs import get_demo_jobs
     from services.jooble_service import jooble_service
-    from services.job_normalizer import normalize_jooble_jobs
+    from services.job_normalizer import normalize_demo_jobs, normalize_jooble_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class JobSourceService:
         """
         if force_demo:
             logger.info("force_demo=True requested. Serving local demo jobs.")
-            return get_demo_jobs(), "demo"
+            return normalize_demo_jobs(get_demo_jobs()), "demo"
 
         # Construct search query keywords
         search_keywords = (keywords or "").strip()
@@ -123,7 +123,7 @@ class JobSourceService:
             logger.info("Jooble API key not set. Using local demo jobs fallback.")
 
         # Fallback to local demo jobs
-        return get_demo_jobs(), "demo"
+        return normalize_demo_jobs(get_demo_jobs()), "demo"
 
 
 # Global singleton instance

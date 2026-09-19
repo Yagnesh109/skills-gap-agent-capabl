@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
 
+from profile_parsing.schemas import UserProfile
+
 # ---------------------------------------------------------------------------
 # Path bootstrap
 # ---------------------------------------------------------------------------
@@ -247,7 +249,10 @@ def _install_all_mocks(*,
     # ---- 2) Fake SkillMatchingService ----------------------------------
     class FakeMatching:
         def rank_jobs(self, *, candidate_skills, jobs, top_k=None):
-            track["call_order"].append("skill_matching")
+            if "skill_matching" not in track["call_order"]:
+                track["call_order"].append("skill_matching")
+            else:
+                track.setdefault("opportunity_match_calls", []).append(list(candidate_skills))
             track["match_skills_input"] = list(candidate_skills)
             track["match_jobs_count"] = len(jobs)
             return _make_matches([dict(j) for j in track["jobs"]])
@@ -290,6 +295,22 @@ def _install_all_mocks(*,
             success_flag = not gemini_error
             return (dict(one), success_flag)
 
+    def fake_training(*, missing_skills, top_job_matches=None, user_profile=None, opportunity_analysis=None):
+        track.setdefault("training_calls", []).append(list(missing_skills))
+        track["training_profile"] = user_profile
+        track["training_opportunity"] = opportunity_analysis
+        return {
+            "recommendations": [{
+                "course_name": "Associate Web Developer (NSQF Level 5)",
+                "provider": "Skill India",
+                "duration_weeks": 6,
+                "roi_score": 0,
+                "jobs_unlocked": 0,
+                "roi_reasoning": "Deterministic test explanation.",
+                "url": "https://example.com/course",
+            }]
+        }
+
     # Install overrides
     gg.set_service_overrides(
         job_source_service=FakeJobSource(),
@@ -298,6 +319,7 @@ def _install_all_mocks(*,
         analyze_single_fn=fake_analyze_single,
         dedupe_skills_fn=fake_dedupe,
         gemini_service=FakeGemini(),
+        training_fn=fake_training,
     )
     return track
 
@@ -318,6 +340,22 @@ class TestT2BasicExecution(_BaseStep7TestCase):
         self.assertEqual(len(state["matching_results"]), 3)
         self.assertEqual(len(state["gap_analyses"]), 3)
         self.assertEqual(len(state["ai_reasoning"]), 3)
+
+    def test_profile_parser_output_is_canonical_workflow_state(self):
+        _install_all_mocks()
+        from profile_parsing.gemini_client import extract_fallback_profile_from_text
+        from orchestration import run_skill_gap_workflow
+
+        parsed = extract_fallback_profile_from_text(
+            "Jordan Lee\nPython Developer\nPython, SQL"
+        )
+        profile = UserProfile.model_validate(parsed)
+        state = run_skill_gap_workflow(profile)
+
+        self.assertIsInstance(state["user_profile"], UserProfile)
+        self.assertEqual(state["user_profile"].skills, ["Python", "SQL"])
+        self.assertEqual(state["user_profile"].target_role, "")
+        self.assertIn("skills", state["user_profile"].model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -502,12 +540,17 @@ class TestT9APIEndpoint(_BaseStep7TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         body = res.json()
         for k in ("user_profile", "jobs", "job_source", "matching_results",
-                  "gap_analyses", "ai_reasoning", "errors"):
+                "gap_analyses", "current_jobs", "opportunity_analysis",
+                "ai_reasoning", "errors"):
             self.assertIn(k, body, f"Missing top-level key {k}")
         self.assertEqual(body["job_source"], "demo")
         self.assertEqual(len(body["matching_results"]), 3)
         self.assertEqual(len(body["gap_analyses"]), 3)
         self.assertEqual(len(body["ai_reasoning"]), 3)
+        self.assertEqual(body["current_jobs"], 0)
+        self.assertIn("opportunities", body["opportunity_analysis"])
+        self.assertIn("training_recommendations", body)
+        self.assertLessEqual(len(body["training_recommendations"]), 3)
 
 
 # ---------------------------------------------------------------------------

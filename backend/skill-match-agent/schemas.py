@@ -1,6 +1,11 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, model_validator
 
+try:
+    from profile_parsing.schemas import UserProfile
+except (ImportError, ValueError):
+    from backend.profile_parsing.schemas import UserProfile
+
 
 class JobPosting(BaseModel):
     """Schema representing a job vacancy posting."""
@@ -23,37 +28,6 @@ class JobPosting(BaseModel):
     source: Optional[str] = Field(
         default="demo",
         description="Job origin source: 'jooble' or 'demo'"
-    )
-
-
-class UserProfile(BaseModel):
-    """Schema representing a candidate's profile."""
-    user_id: Optional[str] = Field(default="user_001", description="Unique user identifier")
-    name: Optional[str] = Field(default="Candidate", description="Candidate name")
-    education: Optional[str] = Field(
-        default=None,
-        description="Candidate's educational background / qualification",
-        example="B.Tech Computer Science"
-    )
-    skills: List[str] = Field(
-        ...,
-        description="List of skills the user possesses",
-        example=["Python", "SQL", "Git"]
-    )
-    interests: Optional[List[str]] = Field(
-        default_factory=list,
-        description="Candidate's areas of interest / focus domains",
-        example=["AI", "Web Development"]
-    )
-    target_role: Optional[str] = Field(
-        default=None,
-        description="Target job title / career role",
-        example="Python Developer"
-    )
-    location: Optional[str] = Field(
-        default=None,
-        description="Preferred job location",
-        example="Pune"
     )
 
 
@@ -124,9 +98,17 @@ class JobMatchResult(BaseModel):
     matched_skills: List[str] = Field(default_factory=list)
     unmatched_skills: List[str] = Field(default_factory=list)
     missing_skills: List[str] = Field(default_factory=list)
+    semantic_matched_skills: List[str] = Field(
+        default_factory=list,
+        description="Required skills matched only through accepted semantic similarity",
+    )
     source: Optional[str] = Field(
         default="demo",
         description="Origin source of matched job: 'jooble' or 'demo'"
+    )
+    location_compatibility: str = Field(
+        default="unknown",
+        description="Deterministic candidate/job location classification"
     )
 
     @model_validator(mode="after")
