@@ -26,7 +26,10 @@ def health_check():
     return {"status": "ok"}
 
 
-VALID_EXTENSIONS = (".pdf", ".doc", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")
+VALID_EXTENSIONS = (
+    ".pdf", ".doc", ".docx", ".txt",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"
+)
 
 
 @app.post("/api/profile/parse")
@@ -39,8 +42,9 @@ async def parse_profile(file: UploadFile = File(...)):
     if not filename.lower().endswith(VALID_EXTENSIONS):
         raise HTTPException(
             status_code=400,
-            detail="Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image (PNG, JPG, JPEG, WEBP, BMP, TIFF) file.",
+            detail="Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image file.",
         )
+
 
 
     try:

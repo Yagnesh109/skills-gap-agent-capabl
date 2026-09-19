@@ -25,7 +25,7 @@ function App() {
 
       const filename = selectedFile.name.toLowerCase()
       const allowedExts = ['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff']
-      if (!allowedExts.some(ext => filename.endsWith(ext))) {
+      if (!allowedExts.some((ext) => filename.endsWith(ext))) {
         setMessage('Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image file.')
         return
       }
@@ -43,7 +43,6 @@ function App() {
         })
 
         const data = await response.json()
-
         if (!response.ok) {
           throw new Error(data.detail || 'The profile parsing request failed.')
         }
@@ -56,7 +55,7 @@ function App() {
       } finally {
         setIsLoading(false)
       }
-    } else {
+    } else if (activeTab === 'text') {
       if (!rawText.trim()) {
         setMessage('Please enter or paste resume text first.')
         return
@@ -75,7 +74,6 @@ function App() {
         })
 
         const data = await response.json()
-
         if (!response.ok) {
           throw new Error(data.detail || 'The profile text parsing request failed.')
         }
@@ -91,14 +89,23 @@ function App() {
     }
   }
 
-  const isErrorMessage = message && (message.includes('Please') || message.includes('Invalid') || message.includes('failed') || message.includes('exceeded'))
+  const isErrorMessage =
+    message &&
+    (message.includes('Please') ||
+      message.includes('Invalid') ||
+      message.includes('failed') ||
+      message.includes('exceeded') ||
+      message.includes('denied') ||
+      message.includes('Could not'))
 
   return (
     <div className="page-shell">
       <div className="card">
         <a className="back-link" href="/">← Back to Dashboard</a>
         <h1>Profile Parsing Agent</h1>
-        <p className="subtitle">Choose your preferred method to extract structured candidate profiles using AI & OCR.</p>
+        <p className="subtitle">
+          Choose your preferred method to extract structured candidate profiles using AI & OCR.
+        </p>
 
         <div className="tab-group">
           <button
@@ -123,7 +130,7 @@ function App() {
           </button>
         </div>
 
-        {activeTab === 'file' ? (
+        {activeTab === 'file' && (
           <label className="upload-box">
             <span className="upload-label">Choose Resume (PDF, DOCX, TXT, PNG, JPG)</span>
             <input
@@ -132,7 +139,9 @@ function App() {
               onChange={handleFileChange}
             />
           </label>
-        ) : (
+        )}
+
+        {activeTab === 'text' && (
           <div className="text-input-box">
             <label className="upload-label" htmlFor="raw-text">Paste Raw Resume Text</label>
             <textarea
@@ -147,12 +156,14 @@ function App() {
         )}
 
         <button className="submit-btn" onClick={handleSubmit} disabled={isLoading}>
-          {isLoading ? 'Parsing...' : activeTab === 'file' ? 'Parse Resume File' : 'Parse Raw Text'}
+          {isLoading
+            ? 'Parsing...'
+            : activeTab === 'file'
+            ? 'Parse Resume File'
+            : 'Parse Raw Text'}
         </button>
 
-        <div className={`message ${isErrorMessage ? 'error' : ''}`}>
-          {message}
-        </div>
+        <div className={`message ${isErrorMessage ? 'error' : ''}`}>{message}</div>
 
         <div className="result-panel">
           <h2>Structured JSON</h2>
@@ -168,4 +179,5 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <App />
   </React.StrictMode>,
 )
+
 

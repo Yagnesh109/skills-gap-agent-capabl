@@ -126,7 +126,7 @@ def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
         raise ValueError(
-            "Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image (PNG, JPG, JPEG, WEBP, BMP, TIFF) file."
+            "Invalid file type. Please upload a PDF, DOC, DOCX, TXT, or Image file."
         )
 
     if extension == ".pdf":
@@ -138,4 +138,5 @@ def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     if extension in IMAGE_EXTENSIONS:
         return _extract_text_from_image(file_bytes, extension)
     return _extract_text_from_doc(file_bytes)
+
 
