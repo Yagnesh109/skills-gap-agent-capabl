@@ -6,7 +6,9 @@
     "skills_taught": ["React", "JavaScript", "Redux", "Frontend Development"],
     "duration_weeks": 4,
     "difficulty": "Intermediate",
-    "url": "https://infyspringboard.onwingspan.com"
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-102",
@@ -15,7 +17,9 @@
     "skills_taught": ["PostgreSQL", "SQL", "Database Design", "RDBMS"],
     "duration_weeks": 8,
     "difficulty": "Beginner",
-    "url": "https://nptel.ac.in/courses"
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-103",
@@ -24,7 +28,9 @@
     "skills_taught": ["FastAPI", "Python", "REST APIs", "Pydantic"],
     "duration_weeks": 3,
     "difficulty": "Intermediate",
-    "url": "https://www.coursera.org"
+    "url": "https://www.coursera.org",
+    "price_inr": 2999,
+    "is_free": false
   },
   {
     "course_id": "CRS-104",
@@ -33,7 +39,9 @@
     "skills_taught": ["Docker", "Kubernetes", "DevOps", "CI/CD"],
     "duration_weeks": 4,
     "difficulty": "Intermediate",
-    "url": "https://infyspringboard.onwingspan.com"
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-105",
@@ -42,7 +50,9 @@
     "skills_taught": ["Java", "Spring Boot", "REST APIs", "Microservices"],
     "duration_weeks": 12,
     "difficulty": "Intermediate",
-    "url": "https://nptel.ac.in/courses"
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-106",
@@ -51,7 +61,9 @@
     "skills_taught": ["HTML", "CSS", "JavaScript", "Git"],
     "duration_weeks": 6,
     "difficulty": "Beginner",
-    "url": "https://www.skillindiadigital.gov.in"
+    "url": "https://www.skillindiadigital.gov.in",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-107",
@@ -60,7 +72,9 @@
     "skills_taught": ["Node.js", "Express.js", "JavaScript", "MongoDB"],
     "duration_weeks": 4,
     "difficulty": "Intermediate",
-    "url": "https://www.coursera.org"
+    "url": "https://www.coursera.org",
+    "price_inr": 3499,
+    "is_free": false
   },
   {
     "course_id": "CRS-108",
@@ -69,7 +83,9 @@
     "skills_taught": ["Linux", "Bash", "Shell Scripting", "DevOps"],
     "duration_weeks": 4,
     "difficulty": "Beginner",
-    "url": "https://nptel.ac.in/courses"
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-109",
@@ -78,7 +94,9 @@
     "skills_taught": ["AWS", "Cloud Computing", "Linux", "Networking"],
     "duration_weeks": 6,
     "difficulty": "Beginner",
-    "url": "https://www.skillindiadigital.gov.in"
+    "url": "https://www.skillindiadigital.gov.in",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-110",
@@ -87,7 +105,9 @@
     "skills_taught": ["Python", "Pandas", "Scikit-Learn", "Machine Learning"],
     "duration_weeks": 8,
     "difficulty": "Intermediate",
-    "url": "https://nptel.ac.in/courses"
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-111",
@@ -96,7 +116,9 @@
     "skills_taught": ["Power BI", "SQL", "Data Analysis", "Excel"],
     "duration_weeks": 4,
     "difficulty": "Beginner",
-    "url": "https://infyspringboard.onwingspan.com"
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-112",
@@ -105,7 +127,9 @@
     "skills_taught": ["Flutter", "Dart", "Mobile Development", "REST APIs"],
     "duration_weeks": 6,
     "difficulty": "Intermediate",
-    "url": "https://www.coursera.org"
+    "url": "https://www.coursera.org",
+    "price_inr": 3999,
+    "is_free": false
   },
   {
     "course_id": "CRS-113",
@@ -114,7 +138,9 @@
     "skills_taught": ["Testing", "Selenium", "Python", "QA"],
     "duration_weeks": 5,
     "difficulty": "Beginner",
-    "url": "https://www.skillindiadigital.gov.in"
+    "url": "https://www.skillindiadigital.gov.in",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-114",
@@ -123,7 +149,9 @@
     "skills_taught": ["Git", "GitHub", "Version Control", "CI/CD"],
     "duration_weeks": 2,
     "difficulty": "Beginner",
-    "url": "https://infyspringboard.onwingspan.com"
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
   },
   {
     "course_id": "CRS-115",
@@ -132,6 +160,8 @@
     "skills_taught": ["Next.js", "TypeScript", "React", "Tailwind CSS"],
     "duration_weeks": 5,
     "difficulty": "Advanced",
-    "url": "https://www.coursera.org"
+    "url": "https://www.coursera.org",
+    "price_inr": 4499,
+    "is_free": false
   }
 ]

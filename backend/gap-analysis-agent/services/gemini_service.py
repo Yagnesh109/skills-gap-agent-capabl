@@ -117,17 +117,35 @@ Your role is EXPLANATION AND REASONING ONLY:
 
 Return STRICTLY a single JSON object with the following shape and NO OTHER TEXT:
 {
-  "summary": "One-paragraph summary of the skill gap situation, referencing only supplied data.",
-  "strengths": ["Matched", "skill", "names"],
+  "summary": "One-paragraph summary of the skill gap situation, referencing only supplied data and retrieved evidence.",
+  "strengths": [
+    {
+      "skill": "Matched skill name",
+      "source_ids": ["JOB-001"]
+    }
+  ],
   "priority_gaps": [
     {
       "skill": "Missing skill name",
-      "reason": "Short, practical reason this is important for THIS role, using job/description given"
+      "reason": "Short, practical reason this is important for THIS role, using retrieved jobs as evidence",
+      "source_ids": ["JOB-001", "JOB-002"]
     },
     ...
   ],
-  "learning_focus": ["Practical short learning goal 1", "goal 2", "..."]
+  "learning_focus": [
+    {
+      "topic": "Practical short learning goal",
+      "source_ids": ["COURSE-101"]
+    }
+  ]
 }
+
+Citation rules:
+- Only cite source IDs that appear in retrieved_jobs or retrieved_courses.
+- Do not invent job IDs, course IDs, companies, courses, URLs, or skills.
+- If retrieved evidence is empty, return empty source_ids arrays.
+- For job-market reasons, cite JOB source IDs.
+- For learning/course suggestions, cite COURSE source IDs when available.
 
 Do NOT wrap in markdown (```). Do NOT prefix with "Here's the JSON..." or anything else.
 Return ONLY the JSON object."""
@@ -139,6 +157,8 @@ def _build_user_prompt_payload(
     job: Dict[str, Any],
     matching: Dict[str, Any],
     gap_analysis: Dict[str, Any],
+    retrieved_jobs: Optional[List[Dict[str, Any]]] = None,
+    retrieved_courses: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build a structured user prompt that is small, clear, and deterministic."""
     trimmed = {
@@ -165,6 +185,33 @@ def _build_user_prompt_payload(
             "matched_skills": gap_analysis.get("matched_skills") or [],
             "gap_priority": gap_analysis.get("gap_priority"),
         },
+        "retrieved_jobs": [
+            {
+                "source_id": item.get("source_id"),
+                "title": item.get("title"),
+                "relevance_score": item.get("relevance_score"),
+                "required_skills": (item.get("metadata") or {}).get("required_skills") or [],
+                "company": (item.get("metadata") or {}).get("company"),
+                "location": (item.get("metadata") or {}).get("location"),
+                "url": item.get("url"),
+                "content": (item.get("content") or "")[:900],
+            }
+            for item in (retrieved_jobs or [])[:8]
+        ],
+        "retrieved_courses": [
+            {
+                "source_id": item.get("source_id"),
+                "title": item.get("title"),
+                "relevance_score": item.get("relevance_score"),
+                "skills_taught": (item.get("metadata") or {}).get("skills_taught") or [],
+                "provider": (item.get("metadata") or {}).get("provider"),
+                "duration_weeks": (item.get("metadata") or {}).get("duration_weeks"),
+                "is_free": (item.get("metadata") or {}).get("is_free"),
+                "url": item.get("url"),
+                "content": (item.get("content") or "")[:700],
+            }
+            for item in (retrieved_courses or [])[:5]
+        ],
     }
     return (
         "Analyze the following structured career skill gap information and return ONLY valid JSON per the system prompt shape:\n"
@@ -193,7 +240,7 @@ class GeminiService:
         timeout_seconds: Optional[float] = None,
     ):
         # Configuration — prefer explicit arguments, then dedicated gap analysis key, then default key
-        if api_key is not None and str(api_key).strip():
+        if api_key is not None:
             self.api_key = str(api_key).strip()
         else:
             self.api_key = (
@@ -271,6 +318,8 @@ class GeminiService:
         job: Dict[str, Any],
         matching: Dict[str, Any],
         gap_analysis: Dict[str, Any],
+        retrieved_jobs: Optional[List[Dict[str, Any]]] = None,
+        retrieved_courses: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, Any], bool]:
         """Run Gemini analysis for one job, with a deterministic fallback on any failure.
 
@@ -303,6 +352,8 @@ class GeminiService:
             job=job,
             matching=matching,
             gap_analysis=gap_analysis,
+            retrieved_jobs=retrieved_jobs,
+            retrieved_courses=retrieved_courses,
         )
 
         try:
@@ -366,7 +417,19 @@ class GeminiService:
         normalized = _normalize_ai_reasoning_shape(parsed)
         # Hallucination protection (defense-in-depth): never let strengths/priority_gaps reference
         # skills that are not actually in the authoritative deterministic lists.
-        normalized["strengths"] = [s for s in normalized["strengths"] if _in_any(s, matched_skills)]
+        normalized_strengths: List[Any] = []
+        for strength in normalized["strengths"]:
+            strength_skill = strength.get("skill") if isinstance(strength, dict) else strength
+            if _in_any(strength_skill, matched_skills):
+                deterministic_skill = _find_by_norm(strength_skill, matched_skills)
+                if isinstance(strength, dict):
+                    normalized_strengths.append({
+                        "skill": deterministic_skill,
+                        "source_ids": list(strength.get("source_ids") or []),
+                    })
+                else:
+                    normalized_strengths.append(deterministic_skill)
+        normalized["strengths"] = normalized_strengths
         allowed_missing_norm = {_norm_skill(s) for s in missing_skills}
         filtered_priority_gaps: List[Dict[str, Any]] = []
         for pg in normalized.get("priority_gaps", []) or []:
@@ -383,10 +446,11 @@ class GeminiService:
                     "reason": str(pg.get("reason") or (
                         f"{deterministic_skill} is required for the {job_title} role."
                     )),
+                    "source_ids": list(pg.get("source_ids") or []),
                 })
         normalized["priority_gaps"] = filtered_priority_gaps
 
-        # learning_focus: allow free-text items, capped at length of missing_skills
+        # learning_focus: allow free-text items or citation objects, capped at length of missing_skills
         normalized["learning_focus"] = list(normalized["learning_focus"])[: max(1, len(missing_skills))]
 
         normalized["source"] = "gemini"
@@ -516,7 +580,18 @@ def _normalize_ai_reasoning_shape(parsed: Dict[str, Any]) -> Dict[str, Any]:
 
     strengths = parsed.get("strengths") or []
     if isinstance(strengths, list):
-        out["strengths"] = [str(s) for s in strengths if s is not None and str(s).strip()]
+        cleaned_strengths: List[Any] = []
+        for s in strengths:
+            if isinstance(s, dict):
+                skill = str(s.get("skill") or "").strip()
+                if skill:
+                    cleaned_strengths.append({
+                        "skill": skill,
+                        "source_ids": list(s.get("source_ids") or []),
+                    })
+            elif s is not None and str(s).strip():
+                cleaned_strengths.append(str(s))
+        out["strengths"] = cleaned_strengths
     else:
         out["strengths"] = []
 
@@ -529,7 +604,11 @@ def _normalize_ai_reasoning_shape(parsed: Dict[str, Any]) -> Dict[str, Any]:
                 reason = str(pg.get("reason") or "")
                 if not skill:
                     continue
-                cleaned.append({"skill": skill, "reason": reason})
+                cleaned.append({
+                    "skill": skill,
+                    "reason": reason,
+                    "source_ids": list(pg.get("source_ids") or []),
+                })
             elif isinstance(pg, str):
                 cleaned.append({"skill": pg, "reason": ""})
         out["priority_gaps"] = cleaned
@@ -538,8 +617,18 @@ def _normalize_ai_reasoning_shape(parsed: Dict[str, Any]) -> Dict[str, Any]:
 
     learning_focus = parsed.get("learning_focus") or []
     if isinstance(learning_focus, list):
-        out["learning_focus"] = [
-            str(s) for s in learning_focus if s is not None and str(s).strip()]
+        cleaned_focus: List[Any] = []
+        for item in learning_focus:
+            if isinstance(item, dict):
+                topic = str(item.get("topic") or item.get("skill") or item.get("course") or "").strip()
+                if topic:
+                    cleaned_focus.append({
+                        "topic": topic,
+                        "source_ids": list(item.get("source_ids") or []),
+                    })
+            elif item is not None and str(item).strip():
+                cleaned_focus.append(str(item))
+        out["learning_focus"] = cleaned_focus
     elif isinstance(learning_focus, str) and learning_focus.strip():
         out["learning_focus"] = [learning_focus.strip()]
     else:

@@ -14,6 +14,11 @@ class PriorityGap(BaseModel):
         description="Practical explanation of why this skill matters for the specific role.",
         example="Django is required for Python web development in this role."
     )
+    source_ids: List[str] = Field(
+        default_factory=list,
+        description="Retrieved RAG source IDs supporting this priority gap.",
+        example=["JOB-003", "JOB-011"],
+    )
 
 
 class AiReasoning(BaseModel):
@@ -23,19 +28,19 @@ class AiReasoning(BaseModel):
         description="Natural-language summary of the gap situation.",
         example="The candidate has a strong foundation in Python and SQL but needs Django and Git to qualify."
     )
-    strengths: List[str] = Field(
+    strengths: List[Any] = Field(
         default_factory=list,
-        description="Subset of matched_skills the AI highlights as strengths.",
-        example=["Python", "SQL"]
+        description="Subset of matched_skills the AI highlights as strengths, optionally with source_ids.",
+        example=[{"skill": "Python", "source_ids": ["JOB-003"]}]
     )
     priority_gaps: List[PriorityGap] = Field(
         default_factory=list,
         description="Ordered list of priority gaps the AI recommends addressing first.",
     )
-    learning_focus: List[str] = Field(
+    learning_focus: List[Any] = Field(
         default_factory=list,
-        description="Short practical learning goals ordered by priority.",
-        example=["Django fundamentals", "Git and collaborative development"]
+        description="Short practical learning goals ordered by priority, optionally with source_ids.",
+        example=[{"topic": "Django fundamentals", "source_ids": ["CRS-103"]}]
     )
     source: str = Field(
         default="deterministic_fallback",

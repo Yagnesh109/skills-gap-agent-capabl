@@ -53,12 +53,14 @@ class TextParseRequest(BaseModel):
 
 class TrainingRecommendRequest(BaseModel):
     missing_skills: List[str] = Field(default_factory=list, description="List of missing skills to query training recommendations for")
+    free_only: bool = Field(default=False, description="When true, select only free courses")
 
 
 class LangGraphUserProfile(UserProfile):
     """Canonical profile accepted by the end-to-end LangGraph endpoint."""
     skills: List[str] = Field(..., description="Candidate's current skills", min_length=0)
     user_id: Optional[str] = Field(default="user_001", description="Optional user identifier")
+    free_only: bool = Field(default=False, description="When true, calculate learning plans using only free courses")
 
 
 def _import_orchestration():
@@ -165,7 +167,10 @@ async def recommend_training_courses(request: TrainingRecommendRequest):
     """Recommend high-ROI courses matching missing skills using Training Recommendation Agent."""
     missing_skills = request.missing_skills or []
     try:
-        recommendations = training_agent_module.recommend_training(missing_skills)
+        recommendations = training_agent_module.recommend_training(
+            missing_skills,
+            free_only=request.free_only,
+        )
         return {"success": True, **recommendations}
     except Exception as exc:
         raise HTTPException(
@@ -208,7 +213,10 @@ async def run_skill_gap_graph(
     profile_dict: Dict[str, Any] = profile.model_dump(mode="python")
 
     try:
-        final_state: Dict[str, Any] = orch.run_skill_gap_workflow(profile_dict)
+        final_state: Dict[str, Any] = orch.run_skill_gap_workflow(
+            profile_dict,
+            free_only=profile.free_only,
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -239,6 +247,14 @@ async def run_skill_gap_graph(
             {"current_jobs": 0, "opportunities": [], "combinations": []},
         ),
         "training_recommendations": final_state.get("training_recommendations", []),
+        "time_to_ready": final_state.get("time_to_ready", {}),
+        "retrieved_jobs": final_state.get("retrieved_jobs", []),
+        "retrieved_courses": final_state.get("retrieved_courses", []),
+        "retrieved_sources": final_state.get("retrieved_sources", []),
+        "rag_available": final_state.get("rag_available", False),
+        "rag_query": final_state.get("rag_query", ""),
+        "rag_index": final_state.get("rag_index", {}),
+        "free_only": final_state.get("free_only", profile.free_only),
         "ai_reasoning": ai_list,
         "errors": final_state.get("errors", []),
     }
