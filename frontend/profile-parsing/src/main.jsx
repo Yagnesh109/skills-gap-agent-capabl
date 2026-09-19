@@ -17,6 +17,9 @@ function App() {
   const [location, setLocation] = React.useState('')
   const [freeOnly, setFreeOnly] = React.useState(false)
   const [workflow, setWorkflow] = React.useState(null)
+  const [careerSimulator, setCareerSimulator] = React.useState(null)
+  const [simulatorInput, setSimulatorInput] = React.useState('')
+  const [simulatorBusy, setSimulatorBusy] = React.useState(false)
   const [notice, setNotice] = React.useState(null)
   const fileRef = React.useRef(null)
   const recognitionRef = React.useRef(null)
@@ -44,6 +47,49 @@ function App() {
   const courses = workflow?.training_recommendations || []
   const missingSkills = [...new Set(gaps.flatMap((gap) => gap.missing_skills || []))]
   const currentJobs = workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0
+
+  React.useEffect(() => {
+    const defaultSkills = missingSkills.slice(0, 4).join(', ')
+    if (!simulatorInput && defaultSkills) {
+      setSimulatorInput(defaultSkills)
+    }
+  }, [missingSkills, simulatorInput])
+
+  React.useEffect(() => {
+    if (workflow?.career_simulator) {
+      setCareerSimulator(workflow.career_simulator)
+    }
+  }, [workflow])
+
+  async function runCareerSimulator() {
+    if (!profile) return
+    setSimulatorBusy(true)
+    setNotice(null)
+
+    try {
+      const body = {
+        skills: profile.skills || [],
+        target_role: targetRole || profile.target_role || '',
+        location: location || profile.location || '',
+        interests: profile.interests || [],
+        free_only: freeOnly,
+        add_skills: simulatorInput.split(',').map((item) => item.trim()).filter(Boolean),
+      }
+	  const response = await fetch(`${API_BASE_URL}/api/career-simulator/simulate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Career simulator failed.')
+      setCareerSimulator(data.career_simulator)
+      setNotice({ type: 'success', text: 'What-if simulation updated for the selected learning plan.' })
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message })
+    } finally {
+      setSimulatorBusy(false)
+    }
+  }
 
   const addLog = (agent, message, type = 'info') => {
     const timeStr = new Date().toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' })
@@ -340,6 +386,9 @@ function App() {
     setLocation('')
     setFreeOnly(false)
     setWorkflow(null)
+    setCareerSimulator(null)
+    setSimulatorInput('')
+    setSimulatorBusy(false)
     setNotice(null)
     setWidgetOpen(false)
     setWidgetLogs([])
@@ -589,6 +638,11 @@ function App() {
             currentJobs={currentJobs}
             missingSkills={missingSkills}
             freeOnly={workflow.free_only ?? freeOnly}
+            careerSimulator={careerSimulator}
+            simulatorInput={simulatorInput}
+            setSimulatorInput={setSimulatorInput}
+            runCareerSimulator={runCareerSimulator}
+            simulatorBusy={simulatorBusy}
           />
         )}
       </main>
@@ -627,7 +681,7 @@ function ProfileSnapshot({ profile }) {
   )
 }
 
-function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly }) {
+function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly, careerSimulator, simulatorInput, setSimulatorInput, runCareerSimulator, simulatorBusy }) {
   const timeToReady = workflow?.time_to_ready || {}
   const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
     current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
@@ -805,8 +859,82 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </div>
       </section>
 
+      <section className="opportunity-section" style={{ marginTop: '1.5rem' }}>
+        <SectionTitle number="F" title="Career What-If Simulator" meta="Before / after learning plan" />
+        <p className="plain-helper">Test a specific skill plan to see how many more jobs open, how much time it takes, and whether it fits your budget.</p>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+          <textarea
+            value={simulatorInput}
+            onChange={(event) => setSimulatorInput(event.target.value)}
+            rows={3}
+            placeholder="Example: Docker, Kubernetes, SQL"
+            style={{ flex: '1 1 260px', minHeight: '96px', borderRadius: '12px', border: '1px solid #26314d', background: '#0a122e', color: '#eef3ff', padding: '0.9rem 1rem', resize: 'vertical' }}
+          />
+          <button className="accent-button" onClick={runCareerSimulator} disabled={simulatorBusy || !profile} style={{ alignSelf: 'flex-start' }}>
+            {simulatorBusy ? 'Simulating…' : 'Run What-If'}
+          </button>
+        </div>
+        {careerSimulator ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Current state</strong>
+                  <span className="op-skill-time">Before learning</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>{careerSimulator.current?.matching_jobs ?? 0}</strong>
+                <span>jobs match</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Avg. match: {careerSimulator.current?.average_match ?? 0.0}
+              </p>
+            </div>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Projected state</strong>
+                  <span className="op-skill-time">After learning</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>{careerSimulator.simulated?.matching_jobs ?? 0}</strong>
+                <span>jobs match</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Avg. match: {careerSimulator.simulated?.average_match ?? 0.0}
+              </p>
+            </div>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Learning impact</strong>
+                  <span className="op-skill-time">Net gain</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>+{careerSimulator.change?.jobs_unlocked ?? 0}</strong>
+                <span>jobs unlocked</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Match lift: {careerSimulator.change?.average_match_change ?? 0.0}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="Select a skill plan to simulate how your next learning choices could change your career options." />
+        )}
+        {careerSimulator && (
+          <div className="learning-plan" style={{ marginTop: '1rem' }}>
+            <div className="learning-plan-total">Skills added: {(careerSimulator.selected_skills || []).join(', ') || 'No skills selected'}</div>
+            <div className="learning-plan-total">Plan fit: {careerSimulator.constraints?.within_time_limit !== false && careerSimulator.constraints?.within_budget !== false ? 'Within your constraints' : 'Needs adjustment'} · {careerSimulator.learning?.total_weeks ?? 0} weeks · {formatInr(careerSimulator.learning?.total_cost_inr ?? 0)}</div>
+          </div>
+        )}
+      </section>
+
       <section className="learning-section">
-        <SectionTitle number="F" title="Your training plan" meta="High-ROI Recommended Courses" />
+        <SectionTitle number="G" title="Your training plan" meta="High-ROI Recommended Courses" />
         <p className="plain-helper">These course recommendations are chosen by the Training Agent to close your top skill gaps.</p>
         <div className="course-grid">
           {courses.map((course) => (
