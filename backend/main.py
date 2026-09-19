@@ -308,6 +308,23 @@ async def run_skill_gap_graph(
     if hasattr(final_profile, "model_dump"):
         final_profile = final_profile.model_dump(mode="json")
 
+    opportunity_analysis = final_state.get(
+        "opportunity_analysis",
+        {"current_jobs": 0, "opportunities": [], "combinations": []},
+    )
+    opportunity_discovery = final_state.get(
+        "opportunity_discovery",
+        opportunity_analysis.get("opportunity_discovery") or {
+            "current_matching_jobs": opportunity_analysis.get("current_jobs", 0),
+            "skill_opportunities": [],
+            "recommended_sequence": [],
+            "cumulative_plan": [],
+            "total_jobs_unlocked": 0,
+            "total_learning_weeks": 0,
+            "total_cost_inr": 0,
+        },
+    )
+
     return {
         "user_profile": final_profile,
         "profile": final_profile,
@@ -318,10 +335,8 @@ async def run_skill_gap_graph(
         "gap_analyses": final_state.get("gap_analyses", []),
         "skill_gaps": final_state.get("skill_gaps", final_state.get("gap_analyses", [])),
         "current_jobs": final_state.get("current_jobs", 0),
-        "opportunity_analysis": final_state.get(
-            "opportunity_analysis",
-            {"current_jobs": 0, "opportunities": [], "combinations": []},
-        ),
+        "opportunity_analysis": opportunity_analysis,
+        "opportunity_discovery": opportunity_discovery,
         "training_recommendations": final_state.get("training_recommendations", []),
         "time_to_ready": final_state.get("time_to_ready", {}),
         "retrieved_jobs": final_state.get("retrieved_jobs", []),

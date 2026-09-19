@@ -32,6 +32,15 @@ function App() {
   const matchedJobs = workflow?.matched_jobs || workflow?.matching_results || []
   const gaps = workflow?.skill_gaps || workflow?.gap_analyses || []
   const opportunities = workflow?.opportunity_analysis?.opportunities || []
+  const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
+    current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
+    skill_opportunities: [],
+    recommended_sequence: [],
+    cumulative_plan: [],
+    total_jobs_unlocked: 0,
+    total_learning_weeks: 0,
+    total_cost_inr: 0,
+  }
   const courses = workflow?.training_recommendations || []
   const missingSkills = [...new Set(gaps.flatMap((gap) => gap.missing_skills || []))]
   const currentJobs = workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0
@@ -620,6 +629,15 @@ function ProfileSnapshot({ profile }) {
 
 function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly }) {
   const timeToReady = workflow?.time_to_ready || {}
+  const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
+    current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
+    skill_opportunities: [],
+    recommended_sequence: [],
+    cumulative_plan: [],
+    total_jobs_unlocked: 0,
+    total_learning_weeks: 0,
+    total_cost_inr: 0,
+  }
   const retrievedJobs = workflow?.retrieved_jobs || []
   const retrievedCourses = workflow?.retrieved_courses || []
   const retrievedSources = workflow?.retrieved_sources || []
@@ -747,8 +765,48 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </div>
       </section>
 
+      <section className="opportunity-section">
+        <SectionTitle number="E" title="What should I learn next?" meta="PathWise discovery engine" />
+        <p className="plain-helper">Based on your current profile, matching jobs, and the next skills that unlock the most opportunities.</p>
+        <div className="opportunity-grid">
+          {(opportunityDiscovery.skill_opportunities || []).slice(0, 6).map((item, index) => (
+            <div className="opportunity-card" key={`${item.skill}-${index}`}>
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">{item.skill}</strong>
+                  <span className="op-skill-time">⏱️ {item.learning_weeks || 0} week(s)</span>
+                </div>
+                <div className="op-unlock-badge">
+                  <span className="op-unlock-num">+{item.jobs_unlocked || 0}</span>
+                  <span className="op-unlock-label">jobs</span>
+                </div>
+              </div>
+              <div className="op-progress-track">
+                <div className="op-progress-fill" style={{ width: `${Math.min(100, ((item.opportunity_rate || 0) * 8) + 15)}%` }} />
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.9rem' }}>
+                <strong>{item.learning_cost_inr ? formatInr(item.learning_cost_inr) : '₹0'}</strong>
+                <span>learning cost</span>
+              </div>
+              <p style={{ marginTop: '0.7rem', fontSize: '0.85rem', color: '#7d87ad' }}>
+                Opportunity rate: {item.opportunity_rate ?? 0}/week · {item.is_free ? 'free path' : 'paid path'}
+              </p>
+            </div>
+          ))}
+          {!((opportunityDiscovery.skill_opportunities || []).length) && <EmptyState text="No discovery candidates are available yet for this profile." />}
+        </div>
+        <div className="learning-plan" style={{ marginTop: '1rem' }}>
+          <div className="learning-plan-total">
+            Best sequence: {(opportunityDiscovery.recommended_sequence || []).slice(0, 5).join(' → ') || 'No sequence yet'}
+          </div>
+          <div className="learning-plan-total">
+            Unique jobs unlocked: +{opportunityDiscovery.total_jobs_unlocked || 0} · {opportunityDiscovery.total_learning_weeks || 0} weeks · {formatInr(opportunityDiscovery.total_cost_inr || 0)}
+          </div>
+        </div>
+      </section>
+
       <section className="learning-section">
-        <SectionTitle number="E" title="Your training plan" meta="High-ROI Recommended Courses" />
+        <SectionTitle number="F" title="Your training plan" meta="High-ROI Recommended Courses" />
         <p className="plain-helper">These course recommendations are chosen by the Training Agent to close your top skill gaps.</p>
         <div className="course-grid">
           {courses.map((course) => (

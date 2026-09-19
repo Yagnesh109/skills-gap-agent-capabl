@@ -126,6 +126,124 @@ def _load_skill_durations() -> Dict[str, float]:
     return durations
 
 
+def _job_ids_from_results(results: Sequence[Any]) -> Set[str]:
+    ids: Set[str] = set()
+    for result in results or []:
+        if isinstance(result, Mapping):
+            job_id = result.get("job_id") or result.get("id") or result.get("title")
+        else:
+            job_id = getattr(result, "job_id", None) or getattr(result, "id", None) or getattr(result, "title", None)
+        if job_id is not None:
+            ids.add(str(job_id))
+    return ids
+
+
+def _build_opportunity_discovery(
+    *,
+    candidate_skills: Sequence[str],
+    missing_skills: Sequence[str],
+    jobs: Sequence[Any],
+    matching_service: Any,
+    current_jobs: int,
+) -> Dict[str, Any]:
+    normalized_jobs = _coerce_jobs(jobs)
+    current_skills = [display for _, display in _dedupe_skills(candidate_skills or [])]
+    missing = _dedupe_skills(missing_skills or [])
+    current_results = matching_service.rank_jobs(candidate_skills=current_skills, jobs=normalized_jobs) if current_skills else []
+    current_job_ids = _job_ids_from_results(current_results)
+
+    courses_path = Path(__file__).resolve().parents[1] / "training-agent" / "courses.json"
+    skill_course_meta: Dict[str, Dict[str, Any]] = {}
+    try:
+        courses = json.loads(courses_path.read_text(encoding="utf-8"))
+        for course in courses if isinstance(courses, list) else []:
+            if not isinstance(course, dict):
+                continue
+            try:
+                duration = float(course.get("duration_weeks") or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration <= 0:
+                continue
+            try:
+                price = int(course.get("price_inr") or 0)
+            except (TypeError, ValueError):
+                price = 0
+            for skill in course.get("skills_taught") or []:
+                norm = normalize_skill(skill)
+                if not norm:
+                    continue
+                existing = skill_course_meta.get(norm)
+                candidate = {
+                    "duration_weeks": duration,
+                    "price_inr": price,
+                    "is_free": bool(course.get("is_free", price == 0)),
+                    "title": course.get("title"),
+                    "provider": course.get("provider"),
+                }
+                if existing is None or (candidate["duration_weeks"], candidate["price_inr"]) < (
+                    existing["duration_weeks"], existing["price_inr"]
+                ):
+                    skill_course_meta[norm] = candidate
+    except (OSError, ValueError, TypeError):
+        skill_course_meta = {}
+
+    skill_opportunities: List[Dict[str, Any]] = []
+    for normalized, display in missing:
+        projected_skills = current_skills + [display]
+        projected_results = matching_service.rank_jobs(candidate_skills=projected_skills, jobs=normalized_jobs)
+        projected_job_ids = _job_ids_from_results(projected_results)
+        newly_unlocked = sorted(projected_job_ids - current_job_ids)
+        skill_meta = skill_course_meta.get(normalized, {})
+        learning_weeks = float(skill_meta.get("duration_weeks") or 1.0)
+        if learning_weeks <= 0:
+            learning_weeks = 1.0
+        learning_cost_inr = int(skill_meta.get("price_inr") or 0)
+        jobs_unlocked = len(newly_unlocked)
+        opportunity_rate = round(jobs_unlocked / learning_weeks, 2) if learning_weeks > 0 else 0.0
+        skill_opportunities.append({
+            "skill": display,
+            "jobs_unlocked": jobs_unlocked,
+            "learning_weeks": learning_weeks,
+            "learning_cost_inr": learning_cost_inr,
+            "is_free": bool(skill_meta.get("is_free", learning_cost_inr == 0)),
+            "opportunity_rate": opportunity_rate,
+            "source_ids": newly_unlocked,
+        })
+
+    skill_opportunities.sort(
+        key=lambda item: (
+            -float(item["opportunity_rate"]),
+            -int(item["jobs_unlocked"]),
+            float(item["learning_weeks"]),
+            int(item["learning_cost_inr"]),
+            normalize_skill(item["skill"]),
+        )
+    )
+
+    cumulative_ids: Set[str] = set(current_job_ids)
+    cumulative_plan = []
+    for entry in skill_opportunities:
+        next_ids = cumulative_ids | set(entry.get("source_ids") or [])
+        additional_jobs = len(next_ids - cumulative_ids)
+        cumulative_ids = next_ids
+        cumulative_plan.append({
+            "skill": entry["skill"],
+            "additional_jobs": additional_jobs,
+            "cumulative_jobs_unlocked": len(cumulative_ids - current_job_ids),
+        })
+
+    return {
+        "current_matching_jobs": int(current_jobs),
+        "skill_opportunities": skill_opportunities,
+        "recommended_sequence": [entry["skill"] for entry in skill_opportunities],
+        "cumulative_plan": cumulative_plan,
+        "total_jobs_unlocked": max(0, len(cumulative_ids - current_job_ids)),
+        "total_learning_weeks": round(sum(float(entry["learning_weeks"]) for entry in skill_opportunities), 2),
+        "total_cost_inr": sum(int(entry["learning_cost_inr"]) for entry in skill_opportunities),
+    }
+
+
 def analyze_opportunities(
     *,
     candidate_skills: Optional[Sequence[str]],
@@ -176,9 +294,17 @@ def analyze_opportunities(
         key=lambda item: (-item["jobs_unlocked"], tuple(normalize_skill(skill) for skill in item["skills"]))
     )
     combinations_output = combinations_output[:MAX_COMBINATIONS]
+    opportunity_discovery = _build_opportunity_discovery(
+        candidate_skills=current_skills,
+        missing_skills=[skill for _, skill in missing],
+        jobs=normalized_jobs,
+        matching_service=matching_service,
+        current_jobs=current_jobs,
+    )
 
     return {
         "current_jobs": current_jobs,
         "opportunities": opportunities,
         "combinations": combinations_output,
+        "opportunity_discovery": opportunity_discovery,
     }

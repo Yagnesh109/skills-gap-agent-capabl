@@ -147,6 +147,7 @@ class SkillGapState(TypedDict, total=False):
     gap_analyses: List[Dict[str, Any]]
     current_jobs: int
     opportunity_analysis: Dict[str, Any]
+    opportunity_discovery: Dict[str, Any]
     training_recommendations: List[Dict[str, Any]]
     time_to_ready: Dict[str, Dict[str, Any]]
     retrieved_jobs: List[Dict[str, Any]]
@@ -529,11 +530,21 @@ def gap_analysis_node(state: SkillGapState) -> Dict[str, Any]:
 
     analyses_dicts = [dict(a) for a in analyses]
     opportunity = _opportunity_result(analyses_dicts)
+    discovery = opportunity.get("opportunity_discovery") or {
+        "current_matching_jobs": opportunity["current_jobs"],
+        "skill_opportunities": [],
+        "recommended_sequence": [],
+        "cumulative_plan": [],
+        "total_jobs_unlocked": 0,
+        "total_learning_weeks": 0,
+        "total_cost_inr": 0,
+    }
     return {
         "gap_analyses": analyses_dicts,
         "skill_gaps": analyses_dicts,
         "current_jobs": opportunity["current_jobs"],
         "opportunity_analysis": opportunity,
+        "opportunity_discovery": discovery,
     }
 
 
