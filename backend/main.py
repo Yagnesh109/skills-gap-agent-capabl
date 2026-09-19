@@ -2,8 +2,8 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from profile_parsing.document_extractor import extract_text_from_file
-from profile_parsing.gemini_client import parse_resume_with_gemini
+from profile_parsing.document_extractor import IMAGE_EXTENSIONS, extract_text_from_file
+from profile_parsing.gemini_client import parse_resume_image_with_gemini, parse_resume_with_gemini
 
 app = FastAPI(title="Skill Gap to Job Matching Agent API")
 
@@ -55,15 +55,22 @@ async def parse_profile(file: UploadFile = File(...)):
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="No resume uploaded.")
 
-    try:
-        resume_text = extract_text_from_file(pdf_bytes, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ext = "." + filename.lower().split(".")[-1] if "." in filename else ""
+    if ext in IMAGE_EXTENSIONS:
+        try:
+            parsed_profile = parse_resume_image_with_gemini(pdf_bytes, filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400 if "empty" in str(exc).lower() or "invalid" in str(exc).lower() else 502, detail=str(exc)) from exc
+    else:
+        try:
+            resume_text = extract_text_from_file(pdf_bytes, filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    try:
-        parsed_profile = parse_resume_with_gemini(resume_text)
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        try:
+            parsed_profile = parse_resume_with_gemini(resume_text)
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"success": True, "profile": parsed_profile}
 

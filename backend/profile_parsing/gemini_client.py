@@ -1,7 +1,9 @@
+import io
 import json
 import re
 from copy import deepcopy
 
+from PIL import Image
 import google.generativeai as genai
 
 from .config import get_fallback_gemini_models, get_gemini_api_key, get_gemini_model
@@ -186,4 +188,69 @@ def parse_resume_with_gemini(resume_text: str) -> dict:
             "Gemini API rate limit or quota exceeded across models. Please wait a minute and try again."
         )
     raise ValueError(f"Gemini API request failed: {last_error}")
+
+
+def parse_resume_image_with_gemini(image_bytes: bytes, filename: str = "") -> dict:
+    """Send resume image directly to Gemini 3.6 Multimodal Vision for parsing."""
+    if not image_bytes:
+        raise ValueError("Image file is empty.")
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+    except Exception as exc:
+        raise ValueError(f"Invalid image file: {exc}") from exc
+
+    api_key = get_gemini_api_key()
+    genai.configure(api_key=api_key)
+
+    candidate_models = get_fallback_gemini_models()
+    prompt = """
+    Extract the candidate's profile from the attached resume image.
+    Return valid JSON only. Use this exact structure:
+    {
+      "personal_info": {"name": "", "email": "", "phone": "", "location": ""},
+      "education": [{"degree": "", "field": "", "institution": "", "graduation_year": ""}],
+      "skills": [],
+      "experience": [{"company": "", "role": "", "duration": "", "responsibilities": []}],
+      "projects": [{"name": "", "description": "", "technologies": []}],
+      "certifications": [],
+      "interests": []
+    }
+
+    Rules:
+    - Perform full OCR and visual extraction on the image text.
+    - Do not invent information that is not present in the image.
+    - Use empty strings/arrays when information is missing.
+    - Normalize obvious skill variations such as 'React JS' -> 'React', 'Mongo DB' -> 'MongoDB'.
+    - Return valid JSON only.
+    - Do not include markdown fences or explanations.
+    """
+
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                [image, prompt],
+                generation_config={
+                    "temperature": 0.1,
+                    "response_mime_type": "application/json",
+                },
+            )
+            result = response.text
+            profile = extract_json_from_text(result)
+            return normalize_profile_dict(profile)
+        except Exception as exc:
+            err_msg = str(exc)
+            last_error = exc
+            if "429" in err_msg or "quota" in err_msg.lower() or "resourceexhausted" in err_msg.lower():
+                continue
+            raise ValueError(f"Gemini API image request failed: {exc}") from exc
+
+    if "429" in str(last_error) or "quota" in str(last_error).lower():
+        raise ValueError(
+            "Gemini API rate limit or quota exceeded across models. Please wait a minute and try again."
+        )
+    raise ValueError(f"Gemini API image request failed: {last_error}")
+
 

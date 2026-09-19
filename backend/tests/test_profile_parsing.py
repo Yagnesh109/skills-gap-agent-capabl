@@ -67,15 +67,26 @@ def test_parse_profile_text_success(mock_parse):
     mock_parse.assert_called_once_with("John Doe, Python Developer with FastAPI")
 
 
-@patch("profile_parsing.document_extractor.extract_text_from_image_bytes")
-def test_image_text_is_extracted(mock_ocr):
-    mock_ocr.return_value = "Sarah Connor\nCybersecurity Specialist"
-    image_bytes = b"fake_png_bytes"
+@patch("main.parse_resume_image_with_gemini")
+def test_image_resume_parsing(mock_image_parse):
+    mock_image_parse.return_value = {
+        **EMPTY_PROFILE,
+        "personal_info": {"name": "Sarah Connor", "email": "", "phone": "", "location": ""},
+        "skills": ["Cybersecurity"],
+    }
+    from fastapi.testclient import TestClient
+    from main import app
 
-    extracted_text = extract_text_from_file(image_bytes, "resume.png")
-
-    assert extracted_text == "Sarah Connor\nCybersecurity Specialist"
-    mock_ocr.assert_called_once_with(image_bytes)
+    client = TestClient(app)
+    response = client.post(
+        "/api/profile/parse",
+        files={"file": ("resume.png", b"fake_png_bytes", "image/png")},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["profile"]["personal_info"]["name"] == "Sarah Connor"
+    assert data["profile"]["skills"] == ["Cybersecurity"]
 
 
 @patch("google.generativeai.GenerativeModel")
@@ -84,7 +95,7 @@ def test_gemini_fallback_on_429_retry(mock_model_cls):
 
     class Mock429Model:
         def generate_content(self, *args, **kwargs):
-            raise Exception("429 You exceeded your current quota, limit: 5, model: gemini-2.0-flash")
+            raise Exception("429 You exceeded your current quota, limit: 5, model: gemini-3.6-flash")
 
     class MockSuccessModel:
         def generate_content(self, *args, **kwargs):
@@ -93,7 +104,7 @@ def test_gemini_fallback_on_429_retry(mock_model_cls):
             return Response()
 
     def model_factory(model_name):
-        if "2.0" in model_name:
+        if "3.6" in model_name:
             return Mock429Model()
         return MockSuccessModel()
 
