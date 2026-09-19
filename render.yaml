@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: skill-gap-job-matching-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DEBUG
+        value: "False"
+      - key: USE_TF
+        value: "0"
+      - key: USE_TORCH
+        value: "1"
+      - key: TF_ENABLE_ONEDNN_OPTS
+        value: "0"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: JOOBLE_API_KEY
+        sync: false
