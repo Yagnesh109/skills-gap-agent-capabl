@@ -1,5 +1,12 @@
+import os
 import sys
 from pathlib import Path
+
+# Disable TensorFlow in transformers to avoid global Protobuf gencode/runtime conflicts
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import importlib
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, File, HTTPException, UploadFile, status, Body

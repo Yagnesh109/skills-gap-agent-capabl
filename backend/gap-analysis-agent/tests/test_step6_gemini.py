@@ -50,9 +50,9 @@ class TestGeminiServiceInit(unittest.TestCase):
 
     def test_01_service_init_with_key_reports_configured(self):
         """API key present → is_configured is True, model name & masked key are sane."""
-        svc = GeminiService(api_key="ABcdefgh1234567890", model_name="gemini-1.5-flash")
+        svc = GeminiService(api_key="ABcdefgh1234567890", model_name="gemini-3.6-flash")
         self.assertTrue(svc.is_configured)
-        self.assertEqual(svc.model_name, "gemini-1.5-flash")
+        self.assertEqual(svc.model_name, "gemini-3.6-flash")
         # Masked key must never contain more than first 3 + last 2 chars
         masked = svc._api_key_masked
         self.assertNotIn("efgh1234567890", masked)

@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - import paths vary by test harness
     except Exception:
         class _Stub:
             GEMINI_API_KEY: str = ""
-            GEMINI_MODEL: str = "gemini-1.5-flash"
+            GEMINI_MODEL: str = "gemini-3.6-flash"
             GEMINI_TEMPERATURE: float = 0.2
             GEMINI_TIMEOUT_SECONDS: float = 20.0
         settings = _Stub()
@@ -192,11 +192,19 @@ class GeminiService:
         temperature: Optional[float] = None,
         timeout_seconds: Optional[float] = None,
     ):
-        # Configuration — prefer explicit arguments, then settings.env
-        self.api_key: str = (api_key if api_key is not None else settings.GEMINI_API_KEY or "") or ""
+        # Configuration — prefer explicit arguments, then dedicated gap analysis key, then default key
+        if api_key is not None and str(api_key).strip():
+            self.api_key = str(api_key).strip()
+        else:
+            self.api_key = (
+                getattr(settings, "GEMINI_API_KEY_GAP_ANALYSIS", "")
+                or getattr(settings, "GEMINI_API_KEY_2", "")
+                or getattr(settings, "GEMINI_API_KEY", "")
+                or ""
+            ).strip()
         # Masked copy for logging only
         self._api_key_masked = _mask_key(self.api_key)
-        self.model_name: str = model_name or settings.GEMINI_MODEL or "gemini-1.5-flash"
+        self.model_name: str = model_name or settings.GEMINI_MODEL or "gemini-3.6-flash"
         self.temperature: float = (
             float(temperature)
             if temperature is not None
@@ -311,16 +319,34 @@ class GeminiService:
                 False,
             )
 
-        try:
-            raw_text = await self._call_gemini_with_timeout(model, prompt)
-        except Exception as exc:
-            logger.info("Gemini call failed: %s", _exc_summary(exc))
+        last_error = None
+        raw_text = None
+        for attempt in range(3):
+            try:
+                raw_text = await self._call_gemini_with_timeout(model, prompt)
+                last_error = None
+                break
+            except Exception as exc:
+                err_msg = str(exc)
+                last_error = exc
+                if "429" in err_msg or "quota" in err_msg.lower() or "resourceexhausted" in err_msg.lower():
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                break
+
+        if last_error is not None:
+            err_str = str(last_error)
+            reason = "Gemini unavailable (API call failed)."
+            if "429" in err_str or "quota" in err_str.lower() or "resourceexhausted" in err_str.lower():
+                reason = "Gemini unavailable (rate limit or quota exceeded)."
+            logger.info("Gemini call failed: %s", _exc_summary(last_error))
             return (
                 _build_fallback_ai_reasoning(
                     job_title=job_title,
                     matched_skills=matched_skills,
                     missing_skills=missing_skills,
-                    unavailable_reason="Gemini unavailable (API call failed).",
+                    unavailable_reason=reason,
                 ),
                 False,
             )
