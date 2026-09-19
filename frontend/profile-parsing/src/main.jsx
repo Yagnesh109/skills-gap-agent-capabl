@@ -20,6 +20,10 @@ function App() {
   const [isGapLoading, setIsGapLoading] = React.useState(false)
   const [gapMessage, setGapMessage] = React.useState('')
 
+  const [courses, setCourses] = React.useState([])
+  const [isCoursesLoading, setIsCoursesLoading] = React.useState(false)
+  const [coursesMessage, setCoursesMessage] = React.useState('')
+
   const handleFileChange = (event) => {
     const file = event.target.files[0]
     setSelectedFile(file || null)
@@ -29,8 +33,10 @@ function App() {
   const handleSubmit = async () => {
     setMatchedJobs([])
     setGapAnalysis(null)
+    setCourses([])
     setMatchingMessage('')
     setGapMessage('')
+    setCoursesMessage('')
 
     if (activeTab === 'file') {
       if (!selectedFile) {
@@ -199,6 +205,49 @@ function App() {
     }
   }
 
+  // Step 4: Training & Course Recommendations Execution
+  const handleFetchCourses = async () => {
+    let missingSkillsList = []
+    if (gapAnalysis && gapAnalysis.analyses) {
+      gapAnalysis.analyses.forEach((an) => {
+        if (an.missing_skills) {
+          missingSkillsList.push(...an.missing_skills)
+        }
+      })
+    } else if (matchedJobs && matchedJobs.length) {
+      matchedJobs.forEach((j) => {
+        if (j.missing_skills) {
+          missingSkillsList.push(...j.missing_skills)
+        }
+      })
+    }
+
+    const uniqueMissingSkills = [...new Set(missingSkillsList)]
+    
+    setIsCoursesLoading(true)
+    setCoursesMessage('Querying Training Recommendation Agent & course catalog...')
+
+    try {
+      const response = await fetch('http://localhost:8000/api/training/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ missing_skills: uniqueMissingSkills }),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.detail || 'Course recommendation request failed.')
+      }
+
+      setCourses(data.recommendations || [])
+      setCoursesMessage(`Found ${data.recommendations_count || 0} high-ROI courses matching missing skills!`)
+    } catch (err) {
+      setCoursesMessage(`Training Agent Error: ${err.message}. Please check if backend server is running at http://localhost:8000`)
+    } finally {
+      setIsCoursesLoading(false)
+    }
+  }
+
   const handleReset = () => {
     setSelectedFile(null)
     setRawText('')
@@ -214,6 +263,11 @@ function App() {
     setGapAnalysis(null)
     setIsGapLoading(false)
     setGapMessage('')
+
+    setCourses([])
+    setIsCoursesLoading(false)
+    setCoursesMessage('')
+
     setActiveTab('file')
 
     const fileInput = document.querySelector('input[type="file"]')
@@ -466,6 +520,83 @@ function App() {
                           </div>
                         )}
                       </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 4: Training & Course Recommendations Agent */}
+        {hasParsedProfile && (
+          <div className="step-section">
+            <div className="step-header">
+              <h2>Step 4: Training & Course Recommendation Agent</h2>
+              <p>Find top-ranked courses from Infosys Springboard, NPTEL, Coursera, and Skill India targeting missing skills.</p>
+            </div>
+
+            <button
+              className="action-btn courses-btn"
+              onClick={handleFetchCourses}
+              disabled={isCoursesLoading || (!gapAnalysis && !matchedJobs.length)}
+            >
+              {isCoursesLoading ? 'Finding Best Courses...' : '🎓 Find Best Courses & Training Roadmap'}
+            </button>
+            {(!gapAnalysis && !matchedJobs.length) && (
+              <span className="hint-text"> (Run Step 2 or Step 3 first to identify missing skills)</span>
+            )}
+
+            {coursesMessage && <div className="message">{coursesMessage}</div>}
+
+            {courses.length > 0 && (
+              <div className="courses-grid">
+                {courses.map((c, idx) => (
+                  <div key={c.course_id || idx} className="course-card">
+                    <div className="course-header">
+                      <div>
+                        <span className="course-provider">{c.provider}</span>
+                        <h3>{c.course_name}</h3>
+                      </div>
+                      <div className="roi-badge">
+                        ROI Score: {c.roi_score}
+                      </div>
+                    </div>
+
+                    <div className="course-meta">
+                      <span className="meta-tag">⏱️ {c.duration_weeks} Weeks</span>
+                      <span className="meta-tag">⚡ {c.difficulty}</span>
+                      <span className="meta-tag green">🔓 {c.jobs_unlocked} Local Roles Unlocked</span>
+                    </div>
+
+                    <div className="course-skills">
+                      <strong>Target Missing Skills:</strong>
+                      <div className="tag-group">
+                        {c.matched_missing_skills?.map((s) => (
+                          <span key={s} className="tag orange">{s}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="course-skills">
+                      <strong>Skills Taught:</strong>
+                      <div className="tag-group">
+                        {c.skills_taught?.map((s) => (
+                          <span key={s} className="tag green">{s}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {c.roi_reasoning && (
+                      <div className="course-reasoning">
+                        💡 <strong>Gemini Career ROI Guidance:</strong> {c.roi_reasoning}
+                      </div>
+                    )}
+
+                    {c.url && (
+                      <a href={c.url} target="_blank" rel="noopener noreferrer" className="course-link-btn">
+                        View Course Details ↗
+                      </a>
                     )}
                   </div>
                 ))}

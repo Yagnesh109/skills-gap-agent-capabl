@@ -39,6 +39,8 @@ skill_match_router = skill_match_module.router
 gap_analysis_module = importlib.import_module("gap-analysis-agent.router")
 gap_analysis_router = gap_analysis_module.router
 
+training_agent_module = importlib.import_module("training-agent.agent")
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -46,6 +48,10 @@ gap_analysis_router = gap_analysis_module.router
 
 class TextParseRequest(BaseModel):
     text: str
+
+
+class TrainingRecommendRequest(BaseModel):
+    missing_skills: List[str] = Field(default_factory=list, description="List of missing skills to query training recommendations for")
 
 
 class LangGraphUserProfile(BaseModel):
@@ -156,6 +162,20 @@ async def parse_profile_text(request: TextParseRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"success": True, "profile": parsed_profile}
+
+
+@app.post("/api/training/recommend")
+async def recommend_training_courses(request: TrainingRecommendRequest):
+    """Recommend high-ROI courses matching missing skills using Training Recommendation Agent."""
+    missing_skills = request.missing_skills or []
+    try:
+        recommendations = training_agent_module.recommend_training(missing_skills)
+        return {"success": True, **recommendations}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Training recommendation failed: {str(exc)}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
