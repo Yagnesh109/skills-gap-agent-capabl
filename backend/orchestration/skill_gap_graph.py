@@ -689,11 +689,27 @@ def gemini_reasoning_node(state: SkillGapState) -> Dict[str, Any]:
 
     async def _run_all():
         tasks = []
-        for analysis in analyses:
+        # Limit detailed Gemini LLM calls to top 4 jobs to minimize latency
+        for i, analysis in enumerate(analyses):
             jid = analysis.get("job_id")
             job = jobs_by_id.get(jid, {})
             match = matches_by_id.get(jid, {})
-            tasks.append(_run_one(jid, job, match, analysis))
+            if i < 4:
+                tasks.append(_run_one(jid, job, match, analysis))
+            else:
+                # Instant deterministic fallback for lower-ranked matches
+                strengths = list(analysis.get("matched_skills") or [])
+                missing = list(analysis.get("missing_skills") or [])
+                quick_fallback = {
+                    "summary": f"Skill analysis for {analysis.get('job_title', jid) or 'role'}.",
+                    "strengths": strengths,
+                    "priority_gaps": [{"skill": s, "reason": f"Required for role."} for s in missing],
+                    "learning_focus": [f"Learn {s}" for s in missing],
+                    "source": "deterministic",
+                    "note": "Deterministic gap analysis.",
+                }
+                async def _instant_fallback(fb): return fb, True
+                tasks.append(_instant_fallback(quick_fallback))
         return await asyncio.gather(*tasks, return_exceptions=False)
 
     try:

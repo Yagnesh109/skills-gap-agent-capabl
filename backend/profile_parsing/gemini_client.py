@@ -115,18 +115,60 @@ def normalize_profile_dict(raw_data: dict) -> dict:
     return UserProfile.model_validate(normalized).model_dump(mode="python")
 
 
-def extract_json_from_text(text: str) -> dict:
-    """Read JSON from Gemini output, even if wrapped in markdown fences."""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = re.sub(r"^json\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = cleaned.strip()
+import ast
 
-    if not cleaned:
+def extract_json_from_text(text: str) -> dict:
+    """Read JSON from Gemini output, repairing common LLM JSON syntax issues."""
+    if not text or not isinstance(text, str):
         raise ValueError("Gemini returned an empty response.")
 
-    return json.loads(cleaned)
+    cleaned = text.strip()
+
+    # 1. Strip markdown fences if present
+    fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", cleaned, re.IGNORECASE)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    else:
+        # Extract outermost { ... }
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1].strip()
+
+    # 2. Try standard json.loads
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # 3. Repair common JSON issues
+    repaired = cleaned
+    # Remove trailing commas: , } -> } and , ] -> ]
+    repaired = re.sub(r",\s*([\}\]])", r"\1", repaired)
+    # Fix single quotes around keys: 'key': -> "key":
+    repaired = re.sub(r"'\s*([^']+?)\s*'\s*:", r'"\1":', repaired)
+    # Fix single quotes around string values: : 'value' -> : "value"
+    repaired = re.sub(r":\s*'([^']*?)'", r': "\1"', repaired)
+
+    try:
+        return json.loads(repaired)
+    except Exception:
+        pass
+
+    # 4. Try ast.literal_eval for python-style dicts
+    try:
+        val = ast.literal_eval(cleaned)
+        if isinstance(val, dict):
+            return val
+    except Exception:
+        pass
+
+    try:
+        val = ast.literal_eval(repaired)
+        if isinstance(val, dict):
+            return val
+    except Exception as exc:
+        raise ValueError(f"Could not parse valid JSON from Gemini output: {exc}") from exc
 
 
 import time
@@ -246,18 +288,21 @@ def parse_resume_with_gemini(resume_text: str) -> dict:
                 last_error = exc
                 if "429" in err_msg or "quota" in err_msg.lower() or "resourceexhausted" in err_msg.lower():
                     if attempt < 2:
-                        time.sleep(2 * (attempt + 1))
+                        time.sleep(1.5 * (attempt + 1))
                         continue
                     break
                 if "api_key_invalid" in err_msg.lower() or "api key not valid" in err_msg.lower() or "invalid api key" in err_msg.lower():
                     break
-                raise ValueError(f"Gemini API request failed: {exc}") from exc
+                if "json" in err_msg.lower() or "parse" in err_msg.lower() or "double quotes" in err_msg.lower():
+                    if attempt < 2:
+                        continue
+                    break
+                # On unexpected error, break to fallback
+                break
 
-    # Fallback to local regex parser if rate limit/quota or invalid key is reached across retries
-    err_str = str(last_error).lower() if last_error else ""
-    if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "api_key_invalid" in err_str or "api key not valid" in err_str:
-        return extract_fallback_profile_from_text(resume_text)
-    raise ValueError(f"Gemini API request failed: {last_error}")
+    # Fallback to local regex parser on any API failure or JSON parsing exception
+    return extract_fallback_profile_from_text(resume_text)
+
 
 
 def parse_resume_image_with_gemini(image_bytes: bytes, filename: str = "") -> dict:
@@ -331,11 +376,12 @@ def parse_resume_image_with_gemini(image_bytes: bytes, filename: str = "") -> di
                     break
                 if "api_key_invalid" in err_msg.lower() or "api key not valid" in err_msg.lower() or "invalid api key" in err_msg.lower():
                     break
-                raise ValueError(f"Gemini API image request failed: {exc}") from exc
+                if "json" in err_msg.lower() or "parse" in err_msg.lower() or "double quotes" in err_msg.lower():
+                    if attempt < 2:
+                        continue
+                    break
+                break
 
-    err_str = str(last_error).lower() if last_error else ""
-    if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str or "api_key_invalid" in err_str or "api key not valid" in err_str:
-        return UserProfile().model_dump(mode="python")
-    raise ValueError(f"Gemini API image request failed: {last_error}")
+    return UserProfile().model_dump(mode="python")
 
 

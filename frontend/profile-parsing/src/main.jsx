@@ -10,12 +10,15 @@ function App() {
   const [mode, setMode] = React.useState('file')
   const [file, setFile] = React.useState(null)
   const [text, setText] = React.useState('')
+  const [voiceTranscript, setVoiceTranscript] = React.useState('')
+  const [isRecording, setIsRecording] = React.useState(false)
   const [profile, setProfile] = React.useState(null)
   const [targetRole, setTargetRole] = React.useState('')
   const [location, setLocation] = React.useState('')
   const [workflow, setWorkflow] = React.useState(null)
   const [notice, setNotice] = React.useState(null)
   const fileRef = React.useRef(null)
+  const recognitionRef = React.useRef(null)
 
   // Agent Pipeline Drawer States
   const [widgetOpen, setWidgetOpen] = React.useState(false)
@@ -39,6 +42,110 @@ function App() {
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+  // ── Voice Recording: MediaRecorder → Gemini backend transcription ──────────
+  const mediaRecorderRef = React.useRef(null)
+  const audioChunksRef   = React.useRef([])
+  const [isTranscribing, setIsTranscribing] = React.useState(false)
+  const [liveInterim, setLiveInterim]       = React.useState('')   // browser STT live preview
+
+  async function toggleVoiceRecording() {
+    // Stop if already recording
+    if (isRecording) {
+      mediaRecorderRef.current?.stop()           // triggers onstop → sends to backend
+      recognitionRef.current?.stop()             // stop live preview too
+      setIsRecording(false)
+      setLiveInterim('')
+      return
+    }
+
+    // Request mic access
+    let stream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      setNotice({ type: 'error', text: 'Microphone access denied. Please allow mic permissions and try again.' })
+      return
+    }
+
+    // ── Live preview via Web Speech API (Chrome/Edge) ──────────────────────
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition()
+      recognition.lang = 'en-US'
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognitionRef.current = recognition
+      recognition.onresult = (e) => {
+        let interim = ''
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (!e.results[i].isFinal) interim += e.results[i][0].transcript
+        }
+        setLiveInterim(interim)
+      }
+      recognition.onerror = () => {}  // silently ignore; backend handles final
+      recognition.start()
+    }
+
+    // ── MediaRecorder captures actual audio blob ───────────────────────────
+    audioChunksRef.current = []
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm'
+
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.current = recorder
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      setLiveInterim('')
+
+      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+      audioChunksRef.current = []
+
+      if (blob.size < 1000) {
+        setNotice({ type: 'error', text: 'Recording was too short. Please speak for at least a second.' })
+        return
+      }
+
+      await sendAudioToBackend(blob, 'recording.webm')
+    }
+
+    recorder.start(250)   // collect chunks every 250 ms
+    setIsRecording(true)
+  }
+
+  // ── Shared helper: send any audio blob/file to backend STT ────────────────
+  const audioFileRef = React.useRef(null)
+
+  async function sendAudioToBackend(audioBlob, filename = 'recording.webm') {
+    setIsTranscribing(true)
+    try {
+      const form = new FormData()
+      form.append('audio', audioBlob, filename)
+      const res = await fetch(`${API_BASE_URL}/api/voice/transcribe`, { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Transcription failed.')
+      setVoiceTranscript((prev) => (prev ? prev + ' ' + data.transcript : data.transcript))
+    } catch (err) {
+      setNotice({ type: 'error', text: `Transcription error: ${err.message}` })
+    } finally {
+      setIsTranscribing(false)
+    }
+  }
+
+  // ── MP3 / audio file upload → STT ─────────────────────────────────────────
+  async function handleAudioFileUpload(e) {
+    const f = e.target.files?.[0]
+    if (!f) return
+    await sendAudioToBackend(f, f.name)
+    // reset file input so same file can be re-uploaded
+    if (audioFileRef.current) audioFileRef.current.value = ''
+  }
+
   // Continuous Single-Pass Multi-Agent Workflow Execution
   async function runFullAgentPipeline() {
     setNotice(null)
@@ -52,7 +159,6 @@ function App() {
     try {
       // Step 0: Document Extractor Agent
       addLog('Document Extractor Agent', 'Initializing document stream reader...', 'info')
-      await sleep(400)
 
       let parseResponse
       if (mode === 'file') {
@@ -66,6 +172,19 @@ function App() {
         setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
         addLog('Profile Extractor Agent (Gemini 3.6)', 'Parsing resume text & extracting candidate skills with Gemini 3.6 Vision AI...', 'info')
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse`, { method: 'POST', body })
+      } else if (mode === 'voice') {
+        if (!voiceTranscript.trim()) throw new Error('Please record your resume details using voice first.')
+        addLog('Document Extractor Agent', 'Processing voice transcript tokens...', 'info')
+
+        // Step 1: Profile Extractor Agent (Gemini 3.6)
+        setCurrentStepIndex(1)
+        setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
+        addLog('Profile Extractor Agent (Gemini 3.6)', 'Parsing voice transcript & extracting candidate skills with Gemini 3.6 LLM...', 'info')
+        parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: voiceTranscript }),
+        })
       } else {
         if (!text.trim()) throw new Error('Please paste resume text first.')
         addLog('Document Extractor Agent', 'Reading pasted raw resume text tokens...', 'info')
@@ -92,21 +211,18 @@ function App() {
       if (!location) setLocation(selectedLoc)
 
       addLog('Profile Extractor Agent (Gemini 3.6)', `Extracted candidate profile: "${parsedProfile.name || 'Candidate'}". Skills count: ${(parsedProfile.skills || []).length}`, 'success')
-      await sleep(600)
 
       // Step 2: Skill Match Agent
       setCurrentStepIndex(2)
       setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
       addLog('Skill Match Agent (Jooble & Vector DB)', `Searching live Jooble market job vector embeddings for "${selectedRole || 'Software Engineer'}"...`, 'info')
-      await sleep(700)
 
       // Step 3: Gap Analysis Agent (LangGraph)
       setCurrentStepIndex(3)
       setActiveAgentName('Gap Analysis Agent (LangGraph)')
-      addLog('Gap Analysis Agent (LangGraph)', 'Initializing 4-node LangGraph orchestration workflow...', 'info')
       addLog('Gap Analysis Agent (LangGraph)', 'Evaluating candidate skills matrix against market requirements...', 'info')
 
-      const graphPromise = fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
+      const graphResponse = await fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -117,31 +233,24 @@ function App() {
         }),
       })
 
-      // Step 4: Opportunity Simulation Agent
-      await sleep(750)
+      // Step 4 & 5 & 6
       setCurrentStepIndex(4)
       setActiveAgentName('Opportunity Simulation Agent')
       addLog('Opportunity Simulation Agent', 'Simulating missing skill permutations & job unlock growth impact...', 'info')
 
-      // Step 5: Training Recommendation Agent (MCP)
-      await sleep(750)
       setCurrentStepIndex(5)
       setActiveAgentName('Training Recommendation Agent (MCP)')
-      addLog('Training Recommendation Agent (MCP)', 'Querying local course catalog MCP server for high-ROI training pathways...', 'info')
+      addLog('Training Recommendation Agent (MCP)', 'Querying course catalog for high-ROI training pathways...', 'info')
 
-      // Step 6: Report Generation Agent
-      await sleep(650)
       setCurrentStepIndex(6)
       setActiveAgentName('Report Generation Agent')
-      addLog('Report Generation Agent', 'Compiling AI Career Report PDF payload & executive dashboard metrics...', 'info')
+      addLog('Report Generation Agent', 'Compiling AI Career Report & dashboard metrics...', 'info')
 
-      const graphResponse = await graphPromise
       const workflowData = await graphResponse.json()
       if (!graphResponse.ok) throw new Error(workflowData.detail || 'Career path analysis failed.')
 
-      addLog('Report Generation Agent', 'PDF Career Analysis Report compiled and ready for download!', 'success')
-      addLog('Orchestrator Agent', 'All 7 multi-agent workflow nodes executed successfully!', 'success')
-      await sleep(500)
+      addLog('Report Generation Agent', 'Career Report ready for download & view!', 'success')
+      addLog('Orchestrator Agent', 'All multi-agent workflow nodes executed successfully!', 'success')
 
       setWorkflow(workflowData)
       setIsFinished(true)
@@ -166,13 +275,12 @@ function App() {
 
     try {
       addLog('Skill Match Agent (Jooble & Vector DB)', `Re-querying market jobs for updated target role: "${targetRole}"...`, 'info')
-      await sleep(600)
 
       setCurrentStepIndex(3)
       setActiveAgentName('Gap Analysis Agent (LangGraph)')
       addLog('Gap Analysis Agent (LangGraph)', 'Re-executing LangGraph skill gap analysis...', 'info')
 
-      const graphPromise = fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
+      const graphResponse = await fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -183,22 +291,18 @@ function App() {
         }),
       })
 
-      await sleep(650)
       setCurrentStepIndex(4)
       setActiveAgentName('Opportunity Simulation Agent')
       addLog('Opportunity Simulation Agent', 'Recalculating job unlock multipliers...', 'info')
 
-      await sleep(650)
       setCurrentStepIndex(5)
       setActiveAgentName('Training Recommendation Agent (MCP)')
       addLog('Training Recommendation Agent (MCP)', 'Updating course recommendations...', 'info')
 
-      const graphResponse = await graphPromise
       const workflowData = await graphResponse.json()
       if (!graphResponse.ok) throw new Error(workflowData.detail || 'Career analysis failed.')
 
       addLog('Orchestrator Agent', 'Updated career analysis workflow complete!', 'success')
-      await sleep(400)
 
       setWorkflow(workflowData)
       setIsFinished(true)
@@ -211,15 +315,27 @@ function App() {
   }
 
   function reset() {
+    mediaRecorderRef.current?.stop()
+    recognitionRef.current?.stop()
     setFile(null)
     setText('')
+    setVoiceTranscript('')
+    setIsRecording(false)
+    setIsTranscribing(false)
+    setLiveInterim('')
     setProfile(null)
     setTargetRole('')
     setLocation('')
     setWorkflow(null)
     setNotice(null)
     setWidgetOpen(false)
+    setWidgetLogs([])
+    setCurrentStepIndex(0)
+    setActiveAgentName('')
+    setIsFinished(false)
+    setWidgetError(null)
     if (fileRef.current) fileRef.current.value = ''
+    if (audioFileRef.current) audioFileRef.current.value = ''
   }
 
   return (
@@ -269,6 +385,7 @@ function App() {
             <div className="mode-switch" role="tablist">
               <button className={mode === 'file' ? 'selected' : ''} onClick={() => setMode('file')}>Upload file</button>
               <button className={mode === 'text' ? 'selected' : ''} onClick={() => setMode('text')}>Paste text</button>
+              <button className={mode === 'voice' ? 'selected' : ''} onClick={() => setMode('voice')}>🎙 Voice</button>
             </div>
 
             {mode === 'file' ? (
@@ -283,13 +400,111 @@ function App() {
                 <strong>{file ? file.name : 'Drop resume file here'}</strong>
                 <span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB selected` : 'PDF, DOCX, TXT, PNG or JPG · up to 10 MB'}</span>
               </label>
-            ) : (
+            ) : mode === 'text' ? (
               <textarea
                 className="resume-textarea"
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 placeholder="Paste the full text of your resume here..."
               />
+            ) : (
+              <div className="voice-panel">
+                {/* Mic button */}
+                <button
+                  className={`voice-mic-btn ${isRecording ? 'recording' : ''} ${isTranscribing ? 'transcribing' : ''}`}
+                  onClick={toggleVoiceRecording}
+                  disabled={isTranscribing}
+                  title={isRecording ? 'Stop & transcribe' : isTranscribing ? 'Transcribing…' : 'Start recording'}
+                >
+                  {isTranscribing ? (
+                    <>
+                      <span className="voice-mic-icon">⏳</span>
+                      <span>Transcribing…</span>
+                    </>
+                  ) : isRecording ? (
+                    <>
+                      <span className="voice-mic-icon">⏹</span>
+                      <span>Stop & Transcribe</span>
+                      <span className="voice-wave">
+                        <span /><span /><span /><span /><span />
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="voice-mic-icon">🎙</span>
+                      <span>Start Recording</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Status hint */}
+                <p className="voice-hint">
+                  {isTranscribing
+                    ? 'Sending audio to Gemini AI for transcription…'
+                    : isRecording
+                    ? 'Listening… speak clearly. Click ⏹ when done.'
+                    : voiceTranscript
+                    ? 'Recording saved. Record more or click Analyze Resume ⚡'
+                    : 'Click the mic to speak your resume details aloud.'}
+                </p>
+
+                {/* Live interim preview while recording */}
+                {isRecording && liveInterim && (
+                  <div className="voice-interim">
+                    <span className="voice-interim-dot" />
+                    <em>{liveInterim}</em>
+                  </div>
+                )}
+
+                {/* Transcribing spinner bar */}
+                {isTranscribing && (
+                  <div className="voice-transcribing-bar">
+                    <div className="voice-transcribing-fill" />
+                  </div>
+                )}
+
+                {/* ── Divider + MP3 / audio file upload ──────────────── */}
+                {!isRecording && !isTranscribing && (
+                  <div className="voice-or-divider">
+                    <span>or upload an audio file</span>
+                  </div>
+                )}
+
+                {!isRecording && !isTranscribing && (
+                  <label className="voice-file-dropzone">
+                    <input
+                      ref={audioFileRef}
+                      type="file"
+                      accept=".mp3,.wav,.ogg,.webm,.m4a,audio/*"
+                      onChange={handleAudioFileUpload}
+                    />
+                    <span className="voice-file-icon">🎵</span>
+                    <span className="voice-file-text">Drop MP3 / audio file here</span>
+                    <span className="voice-file-sub">MP3, WAV, OGG, M4A · up to 25 MB</span>
+                  </label>
+                )}
+
+                {/* Final transcript — editable so user can correct it */}
+                {voiceTranscript && !isRecording && (
+                  <div className="voice-transcript">
+                    <div className="voice-transcript-label">✏️ click to edit</div>
+                    <textarea
+                      className="voice-transcript-textarea"
+                      value={voiceTranscript}
+                      onChange={(e) => setVoiceTranscript(e.target.value)}
+                      rows={5}
+                    />
+                    <div className="voice-transcript-actions">
+                      <button
+                        className="quiet-button"
+                        onClick={() => setVoiceTranscript('')}
+                      >
+                        ✕ Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             <button className="accent-button full-width" onClick={runFullAgentPipeline}>

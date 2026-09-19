@@ -160,6 +160,82 @@ async def parse_profile_text(request: TextParseRequest):
     return {"success": True, "profile": parsed_profile}
 
 
+# ---------------------------------------------------------------------------
+# 1b. Voice Transcription Endpoint (Gemini Audio → Text)
+# ---------------------------------------------------------------------------
+
+ALLOWED_AUDIO_MIME = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/x-m4a": ".m4a",
+    "application/octet-stream": ".webm",  # browser fallback MIME
+}
+
+
+@app.post("/api/voice/transcribe")
+async def transcribe_voice(audio: UploadFile = File(...)):
+    """
+    Accept an audio recording from the browser (WebM/OGG/WAV),
+    transcribe it using ElevenLabs Speech-to-Text, and return the text transcript.
+    """
+    import os as _env_os
+    import httpx
+
+    api_key = (_env_os.getenv("ELEVENLABS_API_KEY") or "").strip()
+    if not api_key or api_key == "your_elevenlabs_api_key_here":
+        raise HTTPException(
+            status_code=503,
+            detail="ElevenLabs API key not configured. Add ELEVENLABS_API_KEY to your .env file."
+        )
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio file is empty.")
+
+    content_type = (audio.content_type or "audio/webm").split(";")[0].strip()
+    ext = ALLOWED_AUDIO_MIME.get(content_type, ".webm")
+    filename = f"recording{ext}"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={
+                    "xi-api-key": api_key,
+                },
+                files={
+                    "file": (filename, audio_bytes, content_type),
+                },
+                data={
+                    "model_id": "scribe_v1",   # ElevenLabs Scribe v1 STT model
+                },
+            )
+
+        if response.status_code != 200:
+            error_detail = response.text or "ElevenLabs STT request failed."
+            raise HTTPException(status_code=502, detail=f"ElevenLabs error: {error_detail}")
+
+        result = response.json()
+        # ElevenLabs returns { "text": "...", "words": [...], ... }
+        transcript = (result.get("text") or "").strip()
+
+        if not transcript:
+            raise HTTPException(status_code=422, detail="No speech detected. Please try speaking more clearly.")
+
+        return {"success": True, "transcript": transcript}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Voice transcription failed: {str(exc)}"
+        ) from exc
+
+
 @app.post("/api/training/recommend")
 async def recommend_training_courses(request: TrainingRecommendRequest):
     """Recommend high-ROI courses matching missing skills using Training Recommendation Agent."""
