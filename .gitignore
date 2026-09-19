@@ -1,0 +1,40 @@
+# =========================
+# 1. Environment Variables (CRITICAL)
+# =========================
+# Never commit this, it contains your GEMINI_API_KEY!
+.env
+backend/.env
+
+# =========================
+# 2. Python Virtual Environments
+# =========================
+venv/
+env/
+.venv/
+
+# =========================
+# 3. Python Cache & Compiled Files
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# =========================
+# 4. Agent Temporary Files & Uploads
+# =========================
+# If your parser agent processes local test resumes, 
+# you might want to ignore them so personal data isn't pushed to GitHub.
+# (Uncomment these if you want to ignore them)
+# *.pdf
+# *.docx
+# uploads/
+# temp/
+
+# =========================
+# 5. OS & IDE Generated Files
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

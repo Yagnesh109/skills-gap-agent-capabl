@@ -1,9 +1,10 @@
 import json
 import os
-from dotenv import load_dotenv
-from google import genai
 import time
 import warnings
+from dotenv import load_dotenv
+from google import genai
+
 warnings.filterwarnings("ignore")
 
 # Automatically loads variables from your backend/.env file
@@ -12,51 +13,60 @@ backend_dir = os.path.dirname(current_dir)
 env_path = os.path.join(backend_dir, '.env')
 load_dotenv(env_path)
 
-# Ensure your .env file has this exact key: GEMINI_API_KEY=your_actual_key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-MOCK_LOCAL_JOB_DEMAND = {
-    "React": 12,
-    "PostgreSQL": 8,
-    "FastAPI": 5,
-    "Docker": 3,
-    "Node.js": 7,
-    "Python": 15,
-    "SQL": 10
-}
-
 def load_courses():
-    """Loads the static course catalog."""
+    """Loads the course catalog (Can be swapped with MCP Client)."""
     file_path = os.path.join(os.path.dirname(__file__), 'courses.json')
-    with open(file_path, 'r') as f:
-        return json.load(f)
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Error: courses.json not found in the directory.")
+        return []
+
+def calculate_dynamic_demand(top_job_matches):
+    """Dynamically calculates skill demand based on the real jobs found in the previous step."""
+    demand = {}
+    if not top_job_matches:
+        return demand
+        
+    for job in top_job_matches:
+        # Assuming your Job Matcher returns a list of 'required_skills' for each job
+        for skill in job.get("required_skills", []):
+            demand[skill] = demand.get(skill, 0) + 1
+    return demand
 
 def calculate_roi_score(course, job_demand):
-    """Calculates the Opportunity Score deterministically."""
+    """Calculates the Opportunity Score based on local market demand vs time invested."""
     jobs_unlocked = 0
     for skill in course.get("skills_taught", []):
-        jobs_unlocked += job_demand.get(skill, 0)
+        # Case-insensitive matching for robust scoring
+        skill_lower = skill.lower()
+        for demand_skill, count in job_demand.items():
+            if demand_skill.lower() == skill_lower:
+                jobs_unlocked += count
     
     if course.get("duration_weeks", 0) == 0:
         return 0, jobs_unlocked
         
+    # ROI Formula: (Jobs Unlocked / Weeks of Study) * 10
     roi = (jobs_unlocked / course["duration_weeks"]) * 10
     return round(roi, 2), jobs_unlocked
 
 def fallback_text(missing_skills, course_title, duration, jobs_unlocked):
     """Provides a safe default string if the API fails during a live demo."""
     return (f"Learning {', '.join(missing_skills)} through '{course_title}' unlocks "
-            f"{jobs_unlocked} additional local roles. At only {duration} weeks of study, "
+            f"{jobs_unlocked} additional roles in the Solapur tech market. At only {duration} weeks of study, "
             f"this offers the highest immediate impact on your employability.")
-
 
 def generate_roi_reasoning(missing_skills, course_title, duration, jobs_unlocked):
     """Calls the Gemini API with a retry mechanism for 503 Server Overload errors."""
     prompt = f"""
-    You are an expert Career Strategist.
+    You are an expert Career Strategist analyzing the local tech market.
     The user is missing these skills: {', '.join(missing_skills)}.
     We recommend the course: '{course_title}' which takes {duration} weeks to complete.
-    Data shows these skills unlock {jobs_unlocked} local job postings.
+    Data shows acquiring these skills unlocks {jobs_unlocked} local job postings.
     
     Write a 2-sentence "ROI Reasoning" statement directly to the user. Explain exactly why this 
     specific course is the most efficient use of their time based on the local job market. 
@@ -74,7 +84,6 @@ def generate_roi_reasoning(missing_skills, course_title, duration, jobs_unlocked
             chat = client.chats.create(model='gemini-3.5-flash')
             response = chat.send_message(prompt)
             
-            
             return response.text.strip()
         except Exception as e:
             if "503" in str(e) and attempt < max_retries - 1:
@@ -84,25 +93,37 @@ def generate_roi_reasoning(missing_skills, course_title, duration, jobs_unlocked
                 print(f"LLM API Error: {e}")
                 return fallback_text(missing_skills, course_title, duration, jobs_unlocked)
 
-def recommend_training(missing_skills: list):
+def recommend_training(missing_skills: list, top_job_matches: list = None):
     """Main execution function for the Training Recommendation Agent."""
     courses = load_courses()
+    
+    # 1. Calculate dynamic demand from actual job postings (fallback to mock if empty)
+    if top_job_matches:
+        job_demand = calculate_dynamic_demand(top_job_matches)
+    else:
+        # Failsafe mock data just in case the Job Matcher node fails during demo
+        job_demand = {"React": 12, "PostgreSQL": 8, "FastAPI": 5, "Docker": 3, "Node.js": 7, "Python": 15, "SQL": 10}
+
     best_course = None
     highest_roi = -1
     best_jobs_unlocked = 0
     
+    # 2. Find the course with the highest ROI
     for course in courses:
-        teaches_missing = any(skill in missing_skills for skill in course.get("skills_taught", []))
+        # Check if the course teaches ANY of the missing skills
+        teaches_missing = any(skill.lower() in [s.lower() for s in course.get("skills_taught", [])] for skill in missing_skills)
+        
         if teaches_missing:
-            roi, jobs_unlocked = calculate_roi_score(course, MOCK_LOCAL_JOB_DEMAND)
+            roi, jobs_unlocked = calculate_roi_score(course, job_demand)
             if roi > highest_roi:
                 highest_roi = roi
                 best_course = course
                 best_jobs_unlocked = jobs_unlocked
                 
     if not best_course:
-        return {"error": "No matching courses found for the missing skills."}
+        return {"recommendations": [], "error": "No matching courses found for the missing skills."}
         
+    # 3. Generate the Gemini reasoning
     roi_statement = generate_roi_reasoning(
         missing_skills=missing_skills,
         course_title=best_course["title"],
@@ -110,6 +131,7 @@ def recommend_training(missing_skills: list):
         jobs_unlocked=best_jobs_unlocked
     )
     
+    # 4. Return structured data ready for LangGraph
     return {
         "recommendations": [
             {
@@ -117,6 +139,7 @@ def recommend_training(missing_skills: list):
                 "provider": best_course["provider"],
                 "duration_weeks": best_course["duration_weeks"],
                 "roi_score": highest_roi,
+                "jobs_unlocked": best_jobs_unlocked,
                 "roi_reasoning": roi_statement,
                 "url": best_course.get("url", "")
             }
@@ -124,12 +147,14 @@ def recommend_training(missing_skills: list):
     }
 
 if __name__ == "__main__":
-    mock_input = {
-        "user_name": "Alex",
-        "missing_skills": ["React", "PostgreSQL"],
-        "target_jobs_analyzed": 15
-    }
+    # Mock data to test the agent in isolation before connecting to LangGraph
+    mock_missing_skills = ["PostgreSQL", "SQL"]
+    mock_job_matches = [
+        {"title": "Backend Engineer", "required_skills": ["Python", "PostgreSQL", "Docker"]},
+        {"title": "Data Analyst", "required_skills": ["SQL", "Excel", "Python"]},
+        {"title": "Database Admin", "required_skills": ["PostgreSQL", "Linux", "SQL"]}
+    ]
     
     print("--- Executing ROI Calculation & Modern SDK Generation ---")
-    result = recommend_training(mock_input["missing_skills"])
+    result = recommend_training(missing_skills=mock_missing_skills, top_job_matches=mock_job_matches)
     print(json.dumps(result, indent=2))
