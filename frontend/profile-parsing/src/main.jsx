@@ -15,6 +15,7 @@ function App() {
   const [profile, setProfile] = React.useState(null)
   const [targetRole, setTargetRole] = React.useState('')
   const [location, setLocation] = React.useState('')
+  const [freeOnly, setFreeOnly] = React.useState(false)
   const [workflow, setWorkflow] = React.useState(null)
   const [notice, setNotice] = React.useState(null)
   const fileRef = React.useRef(null)
@@ -230,6 +231,7 @@ function App() {
           skills: parsedProfile.skills || [],
           target_role: selectedRole,
           location: selectedLoc,
+          free_only: freeOnly,
         }),
       })
 
@@ -288,6 +290,7 @@ function App() {
           skills: profile.skills || [],
           target_role: targetRole,
           location: location,
+          free_only: freeOnly,
         }),
       })
 
@@ -326,6 +329,7 @@ function App() {
     setProfile(null)
     setTargetRole('')
     setLocation('')
+    setFreeOnly(false)
     setWorkflow(null)
     setNotice(null)
     setWidgetOpen(false)
@@ -534,6 +538,15 @@ function App() {
               placeholder="e.g. Remote / Pune"
             />
 
+            <label className="check-control">
+              <input
+                type="checkbox"
+                checked={freeOnly}
+                onChange={(event) => setFreeOnly(event.target.checked)}
+              />
+              <span>Free courses only</span>
+            </label>
+
             {profile ? (
               <div>
                 <ProfileSnapshot profile={profile} />
@@ -566,6 +579,7 @@ function App() {
             courses={courses}
             currentJobs={currentJobs}
             missingSkills={missingSkills}
+            freeOnly={workflow.free_only ?? freeOnly}
           />
         )}
       </main>
@@ -604,7 +618,13 @@ function ProfileSnapshot({ profile }) {
   )
 }
 
-function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills }) {
+function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly }) {
+  const timeToReady = workflow?.time_to_ready || {}
+  const retrievedJobs = workflow?.retrieved_jobs || []
+  const retrievedCourses = workflow?.retrieved_courses || []
+  const retrievedSources = workflow?.retrieved_sources || []
+  const aiReasoning = workflow?.ai_reasoning || []
+  const sourceById = Object.fromEntries(retrievedSources.map((source) => [source.source_id, source]))
   return (
     <section className="results-area">
       <div className="results-header">
@@ -613,9 +633,10 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
           <h2>Here is what your resume means</h2>
         </div>
         <span className="source-pill">
-          {workflow.job_source === 'jooble' ? 'Live Jooble Market API' : 'Demo job database'}
+          Demo job database
           <span className="online-dot" />
         </span>
+        {freeOnly && <span className="source-pill free-filter-pill">Free courses only</span>}
       </div>
 
       <div className="metrics-row">
@@ -625,13 +646,39 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         <Metric label="Courses suggested" value={courses.length} note="Curated next steps" />
       </div>
 
+      <section className="evidence-section">
+        <SectionTitle number="R" title="Evidence from PathWise Knowledge Base" meta={workflow.rag_available ? 'FAISS RAG Retrieval' : 'RAG unavailable'} />
+        <div className="evidence-summary-grid">
+          <div>
+            <strong>{retrievedJobs.length}</strong>
+            <span>jobs retrieved</span>
+          </div>
+          <div>
+            <strong>{retrievedCourses.length}</strong>
+            <span>courses retrieved</span>
+          </div>
+        </div>
+        <div className="evidence-group">
+          <span>Jobs</span>
+          <SourceChips sourceIds={retrievedJobs.map((source) => source.source_id)} sourceById={sourceById} />
+        </div>
+        <div className="evidence-group">
+          <span>Courses</span>
+          <SourceChips sourceIds={retrievedCourses.map((source) => source.source_id)} sourceById={sourceById} />
+        </div>
+      </section>
+
       <div className="results-grid">
         <section className="result-section">
           <SectionTitle number="A" title="Jobs that fit you" meta="Top Market Matches" />
           <p className="plain-helper">These are the roles closest to your current experience & skills vector.</p>
           <div className="job-list">
             {matchedJobs.slice(0, 6).map((job) => (
-              <JobRow job={job} key={job.job_id || job.title} />
+              <JobRow
+                job={job}
+                readiness={timeToReady[job.job_id]}
+                key={job.job_id || job.title}
+              />
             ))}
             {!matchedJobs.length && <EmptyState text="No matching roles came back from this run." />}
           </div>
@@ -689,12 +736,23 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </div>
       </section>
 
+      <section className="ai-evidence-section">
+        <SectionTitle number="D" title="AI recommendations" meta="Grounded Gemini Reasoning" />
+        <p className="plain-helper">These explanations are grounded in retrieved PathWise jobs and courses where evidence is available.</p>
+        <div className="ai-card-grid">
+          {aiReasoning.slice(0, 3).map((reasoning, index) => (
+            <AiRecommendationCard reasoning={reasoning} sourceById={sourceById} key={`ai-${index}`} />
+          ))}
+          {!aiReasoning.length && <EmptyState text="AI reasoning will appear when the workflow has gap analysis results." />}
+        </div>
+      </section>
+
       <section className="learning-section">
-        <SectionTitle number="D" title="Your training plan" meta="High-ROI Recommended Courses" />
+        <SectionTitle number="E" title="Your training plan" meta="High-ROI Recommended Courses" />
         <p className="plain-helper">These course recommendations are chosen by the Training Agent to close your top skill gaps.</p>
         <div className="course-grid">
           {courses.map((course) => (
-            <CourseCard course={course} key={course.course_name} />
+            <CourseCard course={course} sourceById={sourceById} key={course.course_name} />
           ))}
           {!courses.length && <EmptyState text="Your learning plan will appear when the workflow finds a course match." />}
         </div>
@@ -742,8 +800,92 @@ function SectionTitle({ number, title, meta }) {
 
 function EmptyState({ text }) { return <div className="empty-state">{text}</div> }
 
-function JobRow({ job }) {
+function SourceChips({ sourceIds, sourceById }) {
+  const uniqueIds = [...new Set((sourceIds || []).filter(Boolean))]
+  if (!uniqueIds.length) return <span className="no-sources">No retrieved sources</span>
+  return (
+    <div className="source-chip-row">
+      {uniqueIds.map((sourceId) => {
+        const source = sourceById?.[sourceId] || {}
+        const url = source.url || source.metadata?.url
+        const chip = <span className="source-chip">{sourceId}</span>
+        return url ? (
+          <a href={url} target="_blank" rel="noreferrer" className="source-chip-link" key={sourceId}>{chip}</a>
+        ) : (
+          <span key={sourceId}>{chip}</span>
+        )
+      })}
+    </div>
+  )
+}
+
+function textFromFocusItem(item) {
+  if (typeof item === 'string') return item
+  return item?.topic || item?.skill || item?.course || ''
+}
+
+function gapSkill(item) {
+  if (typeof item === 'string') return item
+  return item?.skill || 'Priority gap'
+}
+
+function gapReason(item) {
+  if (typeof item === 'string') return 'Priority skill gap identified by the analysis.'
+  return item?.reason || 'Priority skill gap identified by the analysis.'
+}
+
+function AiRecommendationCard({ reasoning, sourceById }) {
+  const priorityGaps = reasoning?.priority_gaps || []
+  const learningFocus = reasoning?.learning_focus || []
+  return (
+    <article className="ai-recommendation-card">
+      <div className="ai-card-topline">
+        <span>AI Recommendation</span>
+        <b>{reasoning?.source === 'gemini' ? 'Gemini' : 'Fallback'}</b>
+      </div>
+      <p>{reasoning?.summary || 'No summary returned for this recommendation.'}</p>
+
+      {priorityGaps.slice(0, 3).map((gap) => (
+        <div className="ai-evidence-item" key={`${gapSkill(gap)}-${gapReason(gap)}`}>
+          <strong>{gapSkill(gap)}</strong>
+          <span>{gapReason(gap)}</span>
+          <SourceChips sourceIds={(typeof gap === 'object' && gap?.source_ids) || reasoning.source_ids || []} sourceById={sourceById} />
+        </div>
+      ))}
+
+      {learningFocus.length > 0 && (
+        <div className="ai-learning-focus">
+          <span>Learning focus</span>
+          {learningFocus.slice(0, 3).map((item) => (
+            <div className="ai-focus-row" key={textFromFocusItem(item) || 'focus'}>
+              <strong>{textFromFocusItem(item) || 'Learning goal'}</strong>
+              <SourceChips sourceIds={(typeof item === 'object' && item?.source_ids) || []} sourceById={sourceById} />
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function formatInr(value) {
+  const amount = Number(value || 0)
+  return `₹${amount.toLocaleString('en-IN')}`
+}
+
+function formatWeeks(value) {
+  const weeks = Number(value || 0)
+  return Number.isInteger(weeks) ? String(weeks) : weeks.toFixed(1)
+}
+
+function JobRow({ job, readiness }) {
   const score = Math.round(job.match_score || 0)
+  const [expanded, setExpanded] = React.useState(false)
+  const courses = readiness?.recommended_courses || []
+  const uncovered = readiness?.uncovered_skills || []
+  const readyText = readiness
+    ? (readiness.total_weeks === 0 && readiness.is_fully_covered ? 'Already ready' : `${formatWeeks(readiness.total_weeks)} weeks`)
+    : 'Not calculated'
   return (
     <article className="job-row">
       <div className="job-score">{score}<small>%</small></div>
@@ -758,12 +900,51 @@ function JobRow({ job }) {
             <span className="skill-tag location-tag">{job.location_compatibility.replace('_', ' ')}</span>
           )}
         </div>
+        {readiness && (
+          <div className="readiness-panel">
+            <div className="readiness-summary">
+              <span><b>Time to Ready:</b> {readyText}</span>
+              <span><b>Cost to Ready:</b> {formatInr(readiness.total_cost_inr)}</span>
+              {!readiness.is_fully_covered && <span className="warning-text">Uncovered: {uncovered.join(', ')}</span>}
+            </div>
+            {(courses.length > 0 || uncovered.length > 0) && (
+              <button className="plan-toggle" type="button" onClick={() => setExpanded((value) => !value)}>
+                {expanded ? 'Hide Learning Plan' : 'View Learning Plan'}
+              </button>
+            )}
+            {expanded && (
+              <div className="learning-plan">
+                {courses.map((course) => (
+                  <div className="learning-plan-row" key={course.course_id}>
+                    <div>
+                      <strong>{course.title}</strong>
+                      <span>{course.provider || 'Course catalog'} · {(course.skills_covered || []).join(', ')}</span>
+                    </div>
+                    <span>{formatWeeks(course.duration_weeks)} weeks · {course.is_free ? 'Free' : formatInr(course.price_inr)}</span>
+                  </div>
+                ))}
+                {uncovered.map((skill) => (
+                  <div className="learning-plan-row warning" key={skill}>
+                    <div>
+                      <strong>{skill}</strong>
+                      <span>No matching course in the current catalog</span>
+                    </div>
+                    <span>Uncovered</span>
+                  </div>
+                ))}
+                <div className="learning-plan-total">
+                  Total: {formatWeeks(readiness.total_weeks)} weeks · {formatInr(readiness.total_cost_inr)}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </article>
   )
 }
 
-function CourseCard({ course }) {
+function CourseCard({ course, sourceById }) {
   return (
     <article className="course-card">
       <div className="course-topline">
@@ -777,6 +958,7 @@ function CourseCard({ course }) {
         <span>jobs unlocked</span>
       </div>
       {course.reasoning && <blockquote>{course.reasoning}</blockquote>}
+      <SourceChips sourceIds={course.source_ids || []} sourceById={sourceById} />
       {course.url && <a href={course.url} target="_blank" rel="noreferrer">View resource ↗</a>}
     </article>
   )

@@ -3,7 +3,6 @@ import os
 import time
 import warnings
 from dotenv import load_dotenv
-from google import genai
 
 warnings.filterwarnings("ignore")
 
@@ -15,15 +14,22 @@ load_dotenv(env_path)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+try:
+    from .time_to_ready import calculate_time_to_ready, load_courses as ttr_load_courses
+except (ImportError, ValueError):
+    try:
+        from training_agent.time_to_ready import calculate_time_to_ready, load_courses as ttr_load_courses
+    except (ImportError, ValueError):
+        import importlib
+        ttr_mod = importlib.import_module("training-agent.time_to_ready")
+        calculate_time_to_ready = ttr_mod.calculate_time_to_ready
+        ttr_load_courses = ttr_mod.load_courses
+
+
 def load_courses():
     """Loads the course catalog (Can be swapped with MCP Client)."""
-    file_path = os.path.join(os.path.dirname(__file__), 'courses.json')
-    try:
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print("Error: courses.json not found in the directory.")
-        return []
+    return ttr_load_courses()
+
 
 def calculate_dynamic_demand(top_job_matches):
     """Dynamically calculates skill demand based on the real jobs found in the previous step."""
@@ -32,10 +38,10 @@ def calculate_dynamic_demand(top_job_matches):
         return demand
         
     for job in top_job_matches:
-        # Assuming your Job Matcher returns a list of 'required_skills' for each job
         for skill in job.get("required_skills", []):
             demand[skill] = demand.get(skill, 0) + 1
     return demand
+
 
 def _match_skill(s1: str, s2: str) -> bool:
     """Case-insensitive flexible skill matching (supports exact, substring, or token overlap)."""
@@ -48,6 +54,7 @@ def _match_skill(s1: str, s2: str) -> bool:
     tokens1 = set(k1.replace("-", " ").replace(".", " ").split())
     tokens2 = set(k2.replace("-", " ").replace(".", " ").split())
     return bool(tokens1 & tokens2 and not tokens1.isdisjoint(tokens2 - {"development", "engineer", "framework", "programming"}))
+
 
 def calculate_roi_score(course, job_demand):
     """Calculates the Opportunity Score based on local market demand vs time invested."""
@@ -62,26 +69,49 @@ def calculate_roi_score(course, job_demand):
     roi = (jobs_unlocked / duration) * 10 if jobs_unlocked > 0 else (10.0 / duration)
     return round(roi, 2), max(jobs_unlocked, 1)
 
+
 def fallback_text(missing_skills, course_title, duration, jobs_unlocked):
     """Provides a concise, high-impact ROI explanation."""
     skill_names = ", ".join(missing_skills[:3]) if missing_skills else "target technical skills"
     return (f"Mastering {skill_names} via '{course_title}' directly closes your primary market gap, "
             f"unlocking +{jobs_unlocked} target job opportunities in {duration} weeks of focused learning.")
 
+
 def generate_roi_reasoning(missing_skills, course_title, duration, jobs_unlocked):
     """Returns concise ROI reasoning with Gemini or fast deterministic fallback."""
     return fallback_text(missing_skills, course_title, duration, jobs_unlocked)
+
 
 def recommend_training(
     missing_skills: list,
     top_job_matches: list = None,
     user_profile: dict = None,
     opportunity_analysis: dict = None,
+    free_only: bool = False,
 ):
-    """Main execution function for the Training Recommendation Agent."""
+    """Main execution function for the Training Recommendation Agent.
+    
+    Includes Time-to-Ready calculation and course recommendations.
+    """
     courses = load_courses()
     if not courses:
-        return {"recommendations": [], "error": "No courses found."}
+        return {
+            "recommendations": [],
+            "error": "No courses found.",
+            "time_to_ready": {"total_weeks_sequential": 0, "total_weeks_parallel": 0, "skill_breakdown": []},
+        }
+    
+    candidate_courses = [
+        course for course in courses
+        if not free_only or bool(course.get("is_free", False))
+    ]
+    
+    # Calculate Time-to-Ready for the missing skills
+    time_to_ready = calculate_time_to_ready(
+        missing_skills=missing_skills or [],
+        courses=courses,
+        free_only=free_only,
+    )
     
     # 1. Calculate dynamic demand from actual job postings (fallback to mock if empty)
     if top_job_matches:
@@ -92,9 +122,9 @@ def recommend_training(
     # Ensure missing_skills is a clean list
     clean_missing = [s for s in (missing_skills or []) if isinstance(s, str) and s.strip()]
     
-    # 2. Score and sort matching courses
+    # 2. Score and sort matching candidate courses
     scored_courses = []
-    for course in courses:
+    for course in candidate_courses:
         skills_taught = course.get("skills_taught", [])
         
         # Check if course matches any missing skill
@@ -109,14 +139,20 @@ def recommend_training(
             total_score = roi + (match_count * 50)
             scored_courses.append((total_score, course, jobs_unlocked))
 
-    # If no exact match on missing skills, rank all courses by market demand
+    # If no exact match on missing skills, rank all candidate courses by market demand
     if not scored_courses:
-        for course in courses:
+        for course in candidate_courses:
             roi, jobs_unlocked = calculate_roi_score(course, job_demand)
             scored_courses.append((roi, course, jobs_unlocked))
 
+    if not scored_courses:
+        return {
+            "recommendations": [],
+            "error": "No matching courses found for the missing skills.",
+            "time_to_ready": time_to_ready,
+        }
+
     scored_courses.sort(key=lambda x: x[0], reverse=True)
-    
     best_score, best_course, best_jobs = scored_courses[0]
     
     # 3. Generate the reasoning
@@ -127,7 +163,7 @@ def recommend_training(
         jobs_unlocked=best_jobs
     )
     
-    # 4. Return structured recommendations
+    # 4. Return structured recommendations + time_to_ready
     return {
         "recommendations": [
             {
@@ -137,9 +173,12 @@ def recommend_training(
                 "roi_score": round(best_score, 2),
                 "jobs_unlocked": best_jobs,
                 "roi_reasoning": roi_statement,
-                "url": best_course.get("url", "")
+                "url": best_course.get("url", ""),
+                "price_inr": best_course.get("price_inr", 0),
+                "is_free": best_course.get("is_free", False),
             }
-        ]
+        ],
+        "time_to_ready": time_to_ready,
     }
 
 
