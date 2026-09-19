@@ -48,4 +48,8 @@ pnpm-debug.log*
 *.iml
 .DS_Store
 Thumbs.db
+<<<<<<< HEAD
 Desktop.ini
+=======
+>>>>>>> 08a9fa28d00c32037d904e9328a20d1ea0d42a95
+>>>>>>> origin/main
