@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import './styles.css'
 import { AgentWorkingWidget } from './AgentWorkingWidget'
 import { generatePdfReport } from './reportAgent'
+import { SkillGapChart, OpportunityUnlockChart, SkillCoverageChart } from './CareerIntelligenceCharts'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -20,11 +21,11 @@ function App() {
 
   // Agent Pipeline Drawer States
   const [widgetOpen, setWidgetOpen] = React.useState(false)
-  const [currentStepIndex, setCurrentStepIndex] = React.useState(0)
-  const [activeAgentName, setActiveAgentName] = React.useState('')
-  const [widgetLogs, setWidgetLogs] = React.useState([])
-  const [isFinished, setIsFinished] = React.useState(false)
+  const [progressEvents, setProgressEvents] = React.useState([])
+  const [runStatus, setRunStatus] = React.useState('idle')
+  const [progressDisconnected, setProgressDisconnected] = React.useState(false)
   const [widgetError, setWidgetError] = React.useState(null)
+  const eventSourceRef = React.useRef(null)
 
   const matchedJobs = workflow?.matched_jobs || workflow?.matching_results || []
   const gaps = workflow?.skill_gaps || workflow?.gap_analyses || []
@@ -33,187 +34,94 @@ function App() {
   const missingSkills = [...new Set(gaps.flatMap((gap) => gap.missing_skills || []))]
   const currentJobs = workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0
 
-  const addLog = (agent, message, type = 'info') => {
-    const timeStr = new Date().toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' })
-    setWidgetLogs((prev) => [...prev, { time: timeStr, agent, message, type }])
+  const closeEventSource = () => {
+    if (eventSourceRef.current) eventSourceRef.current.close()
+    eventSourceRef.current = null
   }
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  React.useEffect(() => () => closeEventSource(), [])
 
-  // Continuous Single-Pass Multi-Agent Workflow Execution
-  async function runFullAgentPipeline() {
+  async function startWorkflowRun(payload, successText) {
+    closeEventSource()
     setNotice(null)
-    setCurrentStepIndex(0)
-    setActiveAgentName('Document Extractor Agent')
-    setWidgetLogs([])
-    setIsFinished(false)
+    setProgressEvents([])
+    setRunStatus('starting')
+    setProgressDisconnected(false)
     setWidgetError(null)
     setWidgetOpen(true)
-
     try {
-      // Step 0: Document Extractor Agent
-      addLog('Document Extractor Agent', 'Initializing document stream reader...', 'info')
-      await sleep(400)
+      const response = await fetch(`${API_BASE_URL}/api/skill-gap/analyze/run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+      const data = await response.json()
+      if (!response.ok || !data.run_id) throw new Error(data.detail || 'Could not start career analysis.')
+      setRunStatus('running')
+      const source = new EventSource(`${API_BASE_URL}/api/agent/progress/${data.run_id}`)
+      eventSourceRef.current = source
+      const handleProgress = (message) => {
+        try { setProgressEvents((previous) => [...previous, JSON.parse(message.data)]) } catch { /* ignore malformed reconnect data */ }
+      }
+      source.addEventListener('progress', handleProgress)
+      source.addEventListener('complete', async (message) => {
+        const event = JSON.parse(message.data)
+        setProgressEvents((previous) => [...previous, event])
+        const resultResponse = await fetch(`${API_BASE_URL}/api/agent/runs/${data.run_id}`)
+        const result = await resultResponse.json()
+        if (!resultResponse.ok || result.status === 'running') throw new Error(result.detail || 'Workflow result is not ready.')
+        setWorkflow(result)
+        setRunStatus('completed')
+        closeEventSource()
+        const warningNote = result.warnings?.length ? ` ${result.warnings.length} recoverable issue${result.warnings.length === 1 ? '' : 's'} handled.` : ''
+        setNotice({ type: 'success', text: `${successText}${warningNote}` })
+      })
+      source.addEventListener('error', (message) => {
+        if (message?.data) {
+          try { setProgressEvents((previous) => [...previous, JSON.parse(message.data)]) } catch { /* ignore */ }
+          setRunStatus('failed')
+          setWidgetError('The career workflow failed. Review the live log for details.')
+          closeEventSource()
+        } else setProgressDisconnected(true)
+      })
+    } catch (error) {
+      setRunStatus('failed')
+      setWidgetError(error.message)
+      setNotice({ type: 'error', text: error.message })
+    }
+  }
 
+  async function runFullAgentPipeline() {
+    if (runStatus === 'running' || runStatus === 'starting') return
+    try {
       let parseResponse
       if (mode === 'file') {
         if (!file) throw new Error('Please select a resume file first.')
-        addLog('Document Extractor Agent', `Reading document bytes: "${file.name}" (${(file.size / 1024).toFixed(1)} KB)...`, 'info')
-        const body = new FormData()
-        body.append('file', file)
-
-        // Step 1: Profile Extractor Agent (Gemini 3.6)
-        setCurrentStepIndex(1)
-        setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
-        addLog('Profile Extractor Agent (Gemini 3.6)', 'Parsing resume text & extracting candidate skills with Gemini 3.6 Vision AI...', 'info')
+        const body = new FormData(); body.append('file', file)
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse`, { method: 'POST', body })
       } else {
         if (!text.trim()) throw new Error('Please paste resume text first.')
-        addLog('Document Extractor Agent', 'Reading pasted raw resume text tokens...', 'info')
-
-        // Step 1: Profile Extractor Agent (Gemini 3.6)
-        setCurrentStepIndex(1)
-        setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
-        addLog('Profile Extractor Agent (Gemini 3.6)', 'Parsing resume text & extracting candidate skills with Gemini 3.6 LLM...', 'info')
-        parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        })
+        parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
       }
-
       const parseData = await parseResponse.json()
       if (!parseResponse.ok) throw new Error(parseData.detail || 'Profile extraction failed.')
-
       const parsedProfile = parseData.profile || {}
       setProfile(parsedProfile)
       const selectedRole = targetRole || parsedProfile.target_role || parsedProfile.experience?.[0]?.role || ''
       const selectedLoc = location || parsedProfile.location || ''
       if (!targetRole) setTargetRole(selectedRole)
       if (!location) setLocation(selectedLoc)
-
-      addLog('Profile Extractor Agent (Gemini 3.6)', `Extracted candidate profile: "${parsedProfile.name || 'Candidate'}". Skills count: ${(parsedProfile.skills || []).length}`, 'success')
-      await sleep(600)
-
-      // Step 2: Skill Match Agent
-      setCurrentStepIndex(2)
-      setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
-      addLog('Skill Match Agent (Jooble & Vector DB)', `Searching live Jooble market job vector embeddings for "${selectedRole || 'Software Engineer'}"...`, 'info')
-      await sleep(700)
-
-      // Step 3: Gap Analysis Agent (LangGraph)
-      setCurrentStepIndex(3)
-      setActiveAgentName('Gap Analysis Agent (LangGraph)')
-      addLog('Gap Analysis Agent (LangGraph)', 'Initializing 4-node LangGraph orchestration workflow...', 'info')
-      addLog('Gap Analysis Agent (LangGraph)', 'Evaluating candidate skills matrix against market requirements...', 'info')
-
-      const graphPromise = fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...parsedProfile,
-          skills: parsedProfile.skills || [],
-          target_role: selectedRole,
-          location: selectedLoc,
-          free_only: freeOnly,
-        }),
-      })
-
-      // Step 4: Opportunity Simulation Agent
-      await sleep(750)
-      setCurrentStepIndex(4)
-      setActiveAgentName('Opportunity Simulation Agent')
-      addLog('Opportunity Simulation Agent', 'Simulating missing skill permutations & job unlock growth impact...', 'info')
-
-      // Step 5: Training Recommendation Agent (MCP)
-      await sleep(750)
-      setCurrentStepIndex(5)
-      setActiveAgentName('Training Recommendation Agent (MCP)')
-      addLog('Training Recommendation Agent (MCP)', 'Querying local course catalog MCP server for high-ROI training pathways...', 'info')
-
-      // Step 6: Report Generation Agent
-      await sleep(650)
-      setCurrentStepIndex(6)
-      setActiveAgentName('Report Generation Agent')
-      addLog('Report Generation Agent', 'Compiling AI Career Report PDF payload & executive dashboard metrics...', 'info')
-
-      const graphResponse = await graphPromise
-      const workflowData = await graphResponse.json()
-      if (!graphResponse.ok) throw new Error(workflowData.detail || 'Career path analysis failed.')
-
-      addLog('Report Generation Agent', 'PDF Career Analysis Report compiled and ready for download!', 'success')
-      addLog('Orchestrator Agent', 'All 7 multi-agent workflow nodes executed successfully!', 'success')
-      await sleep(500)
-
-      setWorkflow(workflowData)
-      setIsFinished(true)
-      setNotice({ type: 'success', text: 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.' })
+      await startWorkflowRun({ ...parsedProfile, skills: parsedProfile.skills || [], target_role: selectedRole, location: selectedLoc, free_only: freeOnly }, 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.')
     } catch (error) {
-      setWidgetError(error.message)
-      addLog('System Error', error.message, 'error')
-      setNotice({ type: 'error', text: error.message })
+      setRunStatus('failed'); setWidgetError(error.message); setWidgetOpen(true); setNotice({ type: 'error', text: error.message })
     }
   }
 
-  // Re-run analysis if target role/location is updated
   async function rerunCareerAnalysis() {
-    if (!profile) return
-    setNotice(null)
-    setCurrentStepIndex(2)
-    setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
-    setWidgetLogs([])
-    setIsFinished(false)
-    setWidgetError(null)
-    setWidgetOpen(true)
-
-    try {
-      addLog('Skill Match Agent (Jooble & Vector DB)', `Re-querying market jobs for updated target role: "${targetRole}"...`, 'info')
-      await sleep(600)
-
-      setCurrentStepIndex(3)
-      setActiveAgentName('Gap Analysis Agent (LangGraph)')
-      addLog('Gap Analysis Agent (LangGraph)', 'Re-executing LangGraph skill gap analysis...', 'info')
-
-      const graphPromise = fetch(`${API_BASE_URL}/api/skill-gap/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...profile,
-          skills: profile.skills || [],
-          target_role: targetRole,
-          location: location,
-          free_only: freeOnly,
-        }),
-      })
-
-      await sleep(650)
-      setCurrentStepIndex(4)
-      setActiveAgentName('Opportunity Simulation Agent')
-      addLog('Opportunity Simulation Agent', 'Recalculating job unlock multipliers...', 'info')
-
-      await sleep(650)
-      setCurrentStepIndex(5)
-      setActiveAgentName('Training Recommendation Agent (MCP)')
-      addLog('Training Recommendation Agent (MCP)', 'Updating course recommendations...', 'info')
-
-      const graphResponse = await graphPromise
-      const workflowData = await graphResponse.json()
-      if (!graphResponse.ok) throw new Error(workflowData.detail || 'Career analysis failed.')
-
-      addLog('Orchestrator Agent', 'Updated career analysis workflow complete!', 'success')
-      await sleep(400)
-
-      setWorkflow(workflowData)
-      setIsFinished(true)
-      setNotice({ type: 'success', text: 'Updated career analysis complete!' })
-    } catch (error) {
-      setWidgetError(error.message)
-      addLog('System Error', error.message, 'error')
-      setNotice({ type: 'error', text: error.message })
-    }
+    if (!profile || runStatus === 'running' || runStatus === 'starting') return
+    await startWorkflowRun({ ...profile, skills: profile.skills || [], target_role: targetRole, location, free_only: freeOnly }, 'Updated career analysis complete!')
   }
 
   function reset() {
+    closeEventSource()
     setFile(null)
     setText('')
     setProfile(null)
@@ -223,6 +131,9 @@ function App() {
     setWorkflow(null)
     setNotice(null)
     setWidgetOpen(false)
+    setProgressEvents([])
+    setRunStatus('idle')
+    setWidgetError(null)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -231,11 +142,10 @@ function App() {
       {/* Floating Gemini-style Agent Transparency Working Drawer */}
       <AgentWorkingWidget
         isOpen={widgetOpen}
-        currentStepIndex={currentStepIndex}
-        activeAgentName={activeAgentName}
-        logs={widgetLogs}
-        isFinished={isFinished}
+        events={progressEvents}
+        runStatus={runStatus}
         error={widgetError}
+        disconnected={progressDisconnected}
         onComplete={() => setWidgetOpen(false)}
       />
 
@@ -246,7 +156,7 @@ function App() {
         </div>
 
         <div className="nav-actions">
-          {(widgetLogs.length > 0) && (
+          {(progressEvents.length > 0) && (
             <button className="ghost-button" onClick={() => setWidgetOpen(true)} title="View live agent working transparency drawer">
               ⚡ View Active Agents
             </button>
@@ -409,7 +319,9 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
   const retrievedCourses = workflow?.retrieved_courses || []
   const retrievedSources = workflow?.retrieved_sources || []
   const aiReasoning = workflow?.ai_reasoning || []
+  const careerIntelligence = workflow?.career_intelligence || {}
   const sourceById = Object.fromEntries(retrievedSources.map((source) => [source.source_id, source]))
+  const jobsById = Object.fromEntries((workflow?.jobs || []).map((job) => [job.job_id, job]))
   return (
     <section className="results-area">
       <div className="results-header">
@@ -430,6 +342,15 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         <Metric label="Skills to strengthen" value={missingSkills.length} note="Target learning list" />
         <Metric label="Courses suggested" value={courses.length} note="Curated next steps" />
       </div>
+
+      <section className="career-intelligence-section">
+        <SectionTitle number="I" title="Career Intelligence" meta="Deterministic analysis" />
+        <div className="career-charts-grid">
+          <SkillGapChart data={careerIntelligence.skill_gap || []} />
+          <OpportunityUnlockChart data={careerIntelligence.opportunity_unlock || []} />
+          <SkillCoverageChart data={careerIntelligence.skill_coverage} />
+        </div>
+      </section>
 
       <section className="evidence-section">
         <SectionTitle number="R" title="Evidence from PathWise Knowledge Base" meta={workflow.rag_available ? 'FAISS RAG Retrieval' : 'RAG unavailable'} />
@@ -459,9 +380,11 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
           <p className="plain-helper">These are the roles closest to your current experience & skills vector.</p>
           <div className="job-list">
             {matchedJobs.slice(0, 6).map((job) => (
-              <JobRow
+              <JobCard
                 job={job}
+                jobDetails={jobsById[job.job_id] || {}}
                 readiness={timeToReady[job.job_id]}
+                evidence={sourceById[job.job_id]}
                 key={job.job_id || job.title}
               />
             ))}
@@ -521,6 +444,17 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </div>
       </section>
 
+      <ToolActivity trace={workflow?.tool_trace || []} />
+
+      <SkillCombinationOptimizer
+        profile={{
+          ...(profile || {}),
+          skills: profile?.skills || [],
+          target_role: targetRole,
+          location,
+        }}
+      />
+
       <section className="ai-evidence-section">
         <SectionTitle number="D" title="AI recommendations" meta="Grounded Gemini Reasoning" />
         <p className="plain-helper">These explanations are grounded in retrieved PathWise jobs and courses where evidence is available.</p>
@@ -557,6 +491,127 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
           </button>
         </div>
       </section>
+    </section>
+  )
+}
+
+function ToolActivity({ trace }) {
+  const [open, setOpen] = React.useState(false)
+  return (
+    <section className="tool-activity-section">
+      <button className="tool-activity-toggle" type="button" onClick={() => setOpen((value) => !value)}>
+        <span>Agent Tools Used</span><span>{open ? '⌃' : '⌄'}</span>
+      </button>
+      {open && (
+        <div className="tool-activity-list">
+          {trace.length ? trace.map((entry, index) => (
+            <article className="tool-activity-row" key={`${entry.tool_name}-${index}`}>
+              <div><strong>{entry.tool_name}</strong><span className={entry.status === 'success' ? 'tool-success' : 'tool-error'}>{entry.status === 'success' ? '✓ Success' : '⚠ Error'}</span></div>
+              {Object.keys(entry.arguments || {}).length > 0 && <code>{JSON.stringify(entry.arguments)}</code>}
+              <span>{entry.result_summary || 'No result summary'}</span>
+            </article>
+          )) : <span className="tool-empty">No tools were requested during this run; the existing deterministic state was sufficient.</span>}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function SkillCombinationOptimizer({ profile }) {
+  const [maxWeeks, setMaxWeeks] = React.useState(4)
+  const [budgetInr, setBudgetInr] = React.useState(1000)
+  const [result, setResult] = React.useState(null)
+  const [loading, setLoading] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [expanded, setExpanded] = React.useState(null)
+
+  async function runOptimizer() {
+    setLoading(true)
+    setError('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/skill-combination-optimizer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_profile: profile, max_weeks: Number(maxWeeks), budget_inr: Number(budgetInr) }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Unable to optimize skill combinations.')
+      setResult(data)
+      setExpanded(null)
+    } catch (requestError) {
+      setError(requestError.message)
+      setResult(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const renderCard = (item, index, exceeded = false) => {
+    const isOpen = expanded === `${exceeded ? 'x' : 'v'}-${index}`
+    const limitText = !item.within_time && !item.within_budget
+      ? 'Exceeds time and budget'
+      : !item.within_time ? `Exceeds ${result.constraints.max_weeks} week limit`
+        : `Exceeds ₹${Number(result.constraints.budget_inr).toLocaleString('en-IN')} budget`
+    return (
+      <article className={`optimizer-card ${exceeded ? 'exceeded' : ''}`} key={`${item.skills.join('-')}-${index}`}>
+        <div className="optimizer-card-topline">
+          <div>
+            <strong>{item.skills.join(' + ')}</strong>
+            <span>{exceeded ? `⚠ ${limitText}` : '✓ Within your limits'}</span>
+          </div>
+          <b>+{item.additional_jobs}</b>
+        </div>
+        <div className="optimizer-metrics">
+          <span><strong>{item.additional_jobs}</strong> opportunities</span>
+          <span><strong>{formatWeeks(item.learning_weeks)}</strong> weeks</span>
+          <span><strong>{formatInr(item.cost_inr)}</strong></span>
+        </div>
+        <div className="optimizer-actions">
+          <button className="plan-toggle" type="button" onClick={() => setExpanded(isOpen ? null : `${exceeded ? 'x' : 'v'}-${index}`)}>
+            {isOpen ? 'Hide details' : 'View skills & plan'}
+          </button>
+          {item.job_ids?.length > 0 && <span>{item.job_ids.length} unlocked jobs</span>}
+        </div>
+        {isOpen && (
+          <div className="optimizer-details">
+            <div><b>Skills</b><span>{item.skills.join(' · ')}</span></div>
+            <div><b>Learning plan</b>
+              {item.courses?.length ? item.courses.map((course) => (
+                <span key={course.course_id}>{course.title} · {formatWeeks(course.duration_weeks)} weeks · {course.is_free ? 'Free' : formatInr(course.price_inr)}</span>
+              )) : <span>No course covers this combination in the catalog.</span>}
+            </div>
+            {item.unlocked_jobs?.length > 0 && <div><b>Unlocked jobs</b>
+              {item.unlocked_jobs.slice(0, 8).map((job) => <span key={job.job_id}>{job.title} · {job.company || 'Company undisclosed'} · {job.location || 'Location unknown'}</span>)}
+            </div>}
+          </div>
+        )}
+      </article>
+    )
+  }
+
+  return (
+    <section className="optimizer-section">
+      <SectionTitle number="O" title="Skill Combination Optimizer" meta="Deterministic What-If Analysis" />
+      <p className="plain-helper">Find which combination of two or three supported skills unlocks the most additional opportunities within your limits.</p>
+      <div className="optimizer-controls">
+        <label>Maximum learning time <input type="number" min="0" step="0.5" value={maxWeeks} onChange={(event) => setMaxWeeks(event.target.value)} /> <span>weeks</span></label>
+        <label>Learning budget <input type="number" min="0" step="100" value={budgetInr} onChange={(event) => setBudgetInr(event.target.value)} /> <span>INR</span></label>
+        <button className="accent-button" type="button" onClick={runOptimizer} disabled={loading}>{loading ? 'Evaluating...' : 'Find Best Skill Combination'}</button>
+      </div>
+      {error && <div className="notice error">{error}</div>}
+      {result && (
+        <>
+          <div className="optimizer-summary">Evaluated {result.combinations.length} data-backed combinations from {result.candidate_skills.length} supported skills.</div>
+          <div className="optimizer-group">
+            <h4>Within Your Limits</h4>
+            {result.valid_combinations.length ? result.valid_combinations.slice(0, 8).map((item, index) => renderCard(item, index)) : <EmptyState text={`No combination fits within ${result.constraints.max_weeks} weeks and ${formatInr(result.constraints.budget_inr)}.`} />}
+          </div>
+          <div className="optimizer-group">
+            <h4>Beyond Your Limits</h4>
+            {result.constraint_exceeded_combinations.length ? result.constraint_exceeded_combinations.slice(0, 8).map((item, index) => renderCard(item, index, true)) : <EmptyState text="No combinations exceeded your current limits." />}
+          </div>
+        </>
+      )}
     </section>
   )
 }
@@ -663,7 +718,68 @@ function formatWeeks(value) {
   return Number.isInteger(weeks) ? String(weeks) : weeks.toFixed(1)
 }
 
-function JobRow({ job, readiness }) {
+function JobCard({ job, jobDetails, readiness, evidence }) {
+  const score = Math.round(job.match_score || 0)
+  const [detailsOpen, setDetailsOpen] = React.useState(false)
+  const [planOpen, setPlanOpen] = React.useState(false)
+  const courses = readiness?.recommended_courses || []
+  const uncovered = readiness?.uncovered_skills || []
+  const matchedSkills = job.matched_skills || []
+  const missingSkills = job.missing_skills || job.unmatched_skills || []
+  const requiredSkills = jobDetails.required_skills || [...matchedSkills, ...missingSkills]
+  const jobUrl = job.url || job.job_url || jobDetails.job_url || ''
+  const readyNow = readiness?.is_fully_covered && Number(readiness?.total_weeks || 0) === 0
+  const readyText = readyNow ? 'Ready now' : readiness ? `${formatWeeks(readiness.total_weeks)} weeks` : 'Learning plan unavailable'
+
+  return (
+    <article className="job-card">
+      <div className="job-card-header">
+        <div className="job-card-title">
+          <strong>{job.title || job.job_title || 'Untitled role'}</strong>
+          <span>{job.company || jobDetails.company || 'Company undisclosed'} · {job.location || jobDetails.location || 'Location unknown'}</span>
+        </div>
+        <div className="job-match-score"><b>{score}</b><small>% match</small></div>
+      </div>
+
+      <div className="job-skill-groups">
+        <div><span className="job-skill-label matched">✓ Matched skills</span><div className="job-skill-chips">{matchedSkills.length ? matchedSkills.map((skill) => <span className="job-skill-chip matched" key={`matched-${skill}`}>{skill}</span>) : <span className="job-card-muted">None detected</span>}</div></div>
+        <div><span className="job-skill-label missing">⚠ Missing skills</span><div className="job-skill-chips">{missingSkills.length ? missingSkills.map((skill) => <span className="job-skill-chip missing" key={`missing-${skill}`}>{skill}</span>) : <span className="job-card-muted">No skill gaps</span>}</div></div>
+      </div>
+
+      <div className="job-coverage"><div><span>Skill coverage</span><b>{score}%</b></div><div className="job-coverage-track"><div style={{ width: `${Math.min(100, Math.max(0, score))}%` }} /></div></div>
+
+      <div className="job-readiness-summary">
+        <span><b>{readyNow ? '✓ Ready now' : 'Time to Ready'}</b>{!readyNow && `: ${readyText}`}</span>
+        <span><b>Cost:</b> {readiness ? formatInr(readiness.total_cost_inr) : 'Unavailable'}</span>
+        {missingSkills.length > 0 && <span className="warning-text">{missingSkills.length} skill{missingSkills.length === 1 ? '' : 's'} to learn</span>}
+      </div>
+
+      <div className="job-card-actions">
+        {jobUrl ? <a className="job-card-button primary" href={jobUrl} target="_blank" rel="noreferrer">View Job ↗</a> : <span className="job-card-button disabled">Job link unavailable</span>}
+        <button className="job-card-button" type="button" onClick={() => setPlanOpen((value) => !value)} disabled={!readiness}>{planOpen ? 'Hide Learning Plan' : 'Learning Plan'}</button>
+        <button className="job-card-button" type="button" onClick={() => setDetailsOpen((value) => !value)}>{detailsOpen ? 'Hide Details' : 'Details'}</button>
+      </div>
+
+      {planOpen && readiness && <div className="job-card-panel learning-plan-panel">
+        <div className="job-panel-heading"><strong>Learning Plan</strong><span>{formatWeeks(readiness.total_weeks)} weeks · {formatInr(readiness.total_cost_inr)}</span></div>
+        {courses.map((course) => <div className="job-course-row" key={course.course_id}><div><strong>{(course.skills_covered || []).join(', ') || course.title}</strong><span>{course.title} · {course.provider || 'Course catalog'}</span></div><span>{formatWeeks(course.duration_weeks)} weeks · {course.is_free ? 'Free' : formatInr(course.price_inr)} {course.url && <a href={course.url} target="_blank" rel="noreferrer">View Course ↗</a>}</span></div>)}
+        {uncovered.map((skill) => <div className="job-course-row warning" key={skill}><strong>{skill}</strong><span>Learning plan unavailable</span></div>)}
+        {!courses.length && !uncovered.length && <span className="job-card-muted">Already ready for this role.</span>}
+      </div>}
+
+      {detailsOpen && <div className="job-card-panel job-details-panel">
+        <div><h4>Required Skills</h4><div className="required-skill-list">{requiredSkills.map((skill) => { const isMatched = matchedSkills.some((item) => item.toLowerCase() === String(skill).toLowerCase()); return <span className={isMatched ? 'required-skill matched' : 'required-skill missing'} key={skill}>{isMatched ? '✓' : '✕'} {skill}</span> })}</div></div>
+        <div><h4>Why you're missing</h4>{missingSkills.length ? missingSkills.map((skill) => <div className="missing-reason" key={skill}><strong>{skill}</strong><span>Required by this role{jobDetails.description ? ` — listed in the job requirements for ${job.title || 'this position'}.` : '.'}</span></div>) : <span className="job-card-muted">No missing skills identified.</span>}</div>
+        {evidence && <div><h4>Evidence</h4><SourceChips sourceIds={[evidence.source_id]} sourceById={{ [evidence.source_id]: evidence }} /></div>}
+        <div><h4>Recommended Learning</h4>{courses.length ? courses.map((course) => <div className="job-recommendation" key={`recommend-${course.course_id}`}><strong>{(course.skills_covered || []).join(', ') || course.title}</strong><span>{course.title} · {formatWeeks(course.duration_weeks)} weeks · {course.is_free ? 'Free' : formatInr(course.price_inr)}</span></div>) : <span className="job-card-muted">Learning plan unavailable for the current course catalog.</span>}</div>
+      </div>}
+    </article>
+  )
+}
+
+// Kept temporarily for compatibility with any external imports; the dashboard
+// uses JobCard above for all matched-job rendering.
+function LegacyJobRow({ job, readiness }) {
   const score = Math.round(job.match_score || 0)
   const [expanded, setExpanded] = React.useState(false)
   const courses = readiness?.recommended_courses || []
