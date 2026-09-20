@@ -53,6 +53,13 @@ class TextParseRequest(BaseModel):
     text: str
 
 
+class ResumeChatRequest(BaseModel):
+    message: str
+    profile: Dict[str, Any] = Field(default_factory=dict)
+    workflow: Dict[str, Any] = Field(default_factory=dict)
+    history: List[Dict[str, str]] = Field(default_factory=list)
+
+
 class TrainingRecommendRequest(BaseModel):
     missing_skills: List[str] = Field(default_factory=list, description="List of missing skills to query training recommendations for")
     free_only: bool = Field(default=False, description="When true, select only free courses")
@@ -190,6 +197,49 @@ async def parse_profile_text(request: TextParseRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"success": True, "profile": parsed_profile}
+
+
+@app.post("/api/profile/resume-chat")
+async def resume_chat(request: ResumeChatRequest):
+    """Answer questions using only the uploaded profile and completed workflow context."""
+    import google.generativeai as genai
+
+    api_key = getattr(settings, "GEMINI_CHAT_API_KEY", "") or os.getenv("GEMINI_CHAT_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="GEMINI_CHAT_API_KEY is not configured.")
+
+    context = {
+        "profile": request.profile,
+        "matched_jobs": request.workflow.get("matched_jobs") or request.workflow.get("matching_results") or [],
+        "skill_gaps": request.workflow.get("skill_gaps") or request.workflow.get("gap_analyses") or [],
+        "training_recommendations": request.workflow.get("training_recommendations") or [],
+        "course_catalog": request.workflow.get("course_catalog") or [],
+        "retrieved_sources": request.workflow.get("retrieved_sources") or [],
+    }
+    prompt = f"""You are PathWise Resume Guide, a concise and helpful career assistant.
+Answer the user's question using only the supplied resume and analysis context.
+Do not invent experience, skills, jobs, courses, or personal details. If the context does not answer something, say so.
+Explain recommendations plainly and refer to the candidate as the user.
+
+Resume and analysis context:
+{context}
+
+Conversation:
+{request.history[-8:]}
+
+User question: {request.message}
+"""
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(getattr(settings, "GEMINI_MODEL", "gemini-3.6-flash"))
+        response = await asyncio.to_thread(
+            model.generate_content,
+            prompt,
+            generation_config={"temperature": 0.3, "max_output_tokens": 700},
+        )
+        return {"success": True, "reply": (response.text or "I could not generate a response.").strip()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Resume assistant unavailable: {type(exc).__name__}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +529,7 @@ async def run_skill_gap_graph(
         "career_intelligence": _build_career_intelligence(final_state),
         "career_simulator": career_simulator,
         "training_recommendations": final_state.get("training_recommendations", []),
+        "course_catalog": [dict(course) for course in training_agent_module.load_courses() if isinstance(course, dict)],
         "time_to_ready": final_state.get("time_to_ready", {}),
         "retrieved_jobs": final_state.get("retrieved_jobs", []),
         "retrieved_courses": final_state.get("retrieved_courses", []),
@@ -511,6 +562,53 @@ def _serialize_skill_gap_result(final_state: Dict[str, Any], default_profile: La
     final_profile = final_state.get("user_profile", default_profile)
     if hasattr(final_profile, "model_dump"):
         final_profile = final_profile.model_dump(mode="json")
+    course_catalog = [
+        dict(course)
+        for course in training_agent_module.load_courses()
+        if isinstance(course, dict)
+    ]
+    opportunity_analysis = final_state.get(
+        "opportunity_analysis",
+        {"current_jobs": 0, "opportunities": [], "combinations": []},
+    )
+    opportunity_discovery = final_state.get(
+        "opportunity_discovery",
+        opportunity_analysis.get("opportunity_discovery") or {
+            "current_matching_jobs": opportunity_analysis.get("current_jobs", 0),
+            "skill_opportunities": [],
+            "recommended_sequence": [],
+            "cumulative_plan": [],
+            "total_jobs_unlocked": 0,
+            "total_learning_weeks": 0,
+            "total_cost_inr": 0,
+        },
+    )
+    missing_skills = sorted({
+        skill
+        for gap in final_state.get("skill_gaps", final_state.get("gap_analyses", []))
+        for skill in (gap.get("missing_skills") or [])
+    })
+
+    try:
+        from orchestration import simulate_career_path
+    except Exception:  # pragma: no cover
+        from backend.orchestration import simulate_career_path
+
+    career_simulator = simulate_career_path(
+        user_profile={
+            "skills": final_profile.get("skills") or [],
+            "target_role": final_profile.get("target_role") or getattr(default_profile, "target_role", None),
+            "location": final_profile.get("location") or getattr(default_profile, "location", None),
+            "interests": final_profile.get("interests") or [],
+            "free_only": final_state.get("free_only", getattr(default_profile, "free_only", False)),
+        },
+        add_skills=missing_skills[:4],
+        max_weeks=None,
+        budget_inr=None,
+    )
+
+    final_status = "error" if final_state.get("status") == "error" else "completed"
+
     return {
         "user_profile": final_profile,
         "profile": final_profile,
@@ -521,9 +619,12 @@ def _serialize_skill_gap_result(final_state: Dict[str, Any], default_profile: La
         "gap_analyses": final_state.get("gap_analyses", []),
         "skill_gaps": final_state.get("skill_gaps", final_state.get("gap_analyses", [])),
         "current_jobs": final_state.get("current_jobs", 0),
-        "opportunity_analysis": final_state.get("opportunity_analysis", {"current_jobs": 0, "opportunities": [], "combinations": []}),
+        "opportunity_analysis": opportunity_analysis,
+        "opportunity_discovery": opportunity_discovery,
         "career_intelligence": _build_career_intelligence(final_state),
+        "career_simulator": career_simulator,
         "training_recommendations": final_state.get("training_recommendations", []),
+        "course_catalog": course_catalog,
         "time_to_ready": final_state.get("time_to_ready", {}),
         "retrieved_jobs": final_state.get("retrieved_jobs", []),
         "retrieved_courses": final_state.get("retrieved_courses", []),
@@ -535,7 +636,7 @@ def _serialize_skill_gap_result(final_state: Dict[str, Any], default_profile: La
         "ai_reasoning": ai_list,
         "errors": final_state.get("errors", []),
         "warnings": final_state.get("warnings", []),
-        "status": final_state.get("status", "completed"),
+        "status": final_status,
         "current_node": final_state.get("current_node", "report"),
         "failed_node": final_state.get("failed_node", ""),
         "node_status": final_state.get("node_status", {}),

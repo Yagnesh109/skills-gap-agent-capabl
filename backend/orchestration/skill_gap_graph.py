@@ -332,7 +332,8 @@ def _emit_node_event(state: SkillGapState, node: str, status: str, message: str,
         return
     try:
         from progress_events import _label, progress_manager
-        progress_manager.publish(run_id, node=node, label=_label(node), status=status, message=message, data=data, error=error)
+        progress_node = "time_to_ready" if node == "gemini_reasoning" else node
+        progress_manager.publish(run_id, node=progress_node, label=_label(progress_node), status=status, message=message, data=data, error=error)
     except Exception:
         logger.debug("Progress event could not be emitted for %s", node, exc_info=True)
 
@@ -655,22 +656,9 @@ def gap_analysis_node(state: SkillGapState) -> Dict[str, Any]:
         return {"gap_analyses": [], "skill_gaps": [], "errors": errors}
 
     analyses_dicts = [dict(a) for a in analyses]
-    opportunity = _opportunity_result(analyses_dicts)
-    discovery = opportunity.get("opportunity_discovery") or {
-        "current_matching_jobs": opportunity["current_jobs"],
-        "skill_opportunities": [],
-        "recommended_sequence": [],
-        "cumulative_plan": [],
-        "total_jobs_unlocked": 0,
-        "total_learning_weeks": 0,
-        "total_cost_inr": 0,
-    }
     return {
         "gap_analyses": analyses_dicts,
         "skill_gaps": analyses_dicts,
-        "current_jobs": opportunity["current_jobs"],
-        "opportunity_analysis": opportunity,
-        "opportunity_discovery": discovery,
     }
 
 
@@ -689,13 +677,26 @@ def opportunity_simulation_node(state: SkillGapState) -> Dict[str, Any]:
 
 
 def time_to_ready_node(state: SkillGapState) -> Dict[str, Any]:
-    """NODE 7 — Calculate job-specific learning plans using the existing engine."""
+    """NODE 6 — Calculate opportunities and job-specific learning plans together."""
     import importlib
     analyses = list(state.get("gap_analyses") or [])
+    user_skills = list(state.get("user_skills") or [])
+    missing_skills = [skill for analysis in analyses for skill in (analysis.get("missing_skills") or [])]
     free_only = bool(state.get("free_only", False))
     ttr_module = importlib.import_module("training-agent.time_to_ready")
     courses = _load_course_catalog()
-    return {"time_to_ready": ttr_module.calculate_per_job_time_to_ready(analyses, courses=courses, free_only=free_only)}
+    opportunity = analyze_opportunities(
+        candidate_skills=user_skills,
+        missing_skills=missing_skills,
+        jobs=list(state.get("jobs") or []),
+        matching_service=_services.matching_service,
+    )
+    return {
+        "current_jobs": opportunity.get("current_jobs", 0),
+        "opportunity_analysis": opportunity,
+        "opportunity_discovery": opportunity.get("opportunity_discovery", {}),
+        "time_to_ready": ttr_module.calculate_per_job_time_to_ready(analyses, courses=courses, free_only=free_only),
+    }
 
 
 def _training_skill_key(skill: Any) -> str:
@@ -1115,23 +1116,24 @@ def gemini_reasoning_node(state: SkillGapState) -> Dict[str, Any]:
 
     async def _run_all():
         tasks = []
-        # Limit detailed Gemini LLM calls to top 4 jobs to minimize latency
+        # Use Gemini only for the top-ranked role. Remaining explanations are
+        # deterministic so the user-facing workflow stays responsive.
         for i, analysis in enumerate(analyses):
             jid = analysis.get("job_id")
             job = jobs_by_id.get(jid, {})
             match = matches_by_id.get(jid, {})
-            if i < 4:
+            if i < 1:
                 tasks.append(_run_one(jid, job, match, analysis))
             else:
                 # Instant deterministic fallback for lower-ranked matches
                 strengths = list(analysis.get("matched_skills") or [])
                 missing = list(analysis.get("missing_skills") or [])
                 quick_fallback = {
-                    "summary": f"Skill analysis for {analysis.get('job_title', jid) or 'role'}.",
+                    "summary": f"Gemini reasoning unavailable for {analysis.get('job_title', jid) or 'role'}. Using deterministic gap analysis.",
                     "strengths": strengths,
                     "priority_gaps": [{"skill": s, "reason": f"Required for role."} for s in missing],
                     "learning_focus": [f"Learn {s}" for s in missing],
-                    "source": "deterministic",
+                    "source": "deterministic_fallback",
                     "note": "Deterministic gap analysis.",
                 }
                 async def _instant_fallback(fb): return fb, True
@@ -1243,16 +1245,10 @@ def build_skill_gap_graph():
     workflow.add_conditional_edges("rag_retrieval", route_after_rag, {"skill_matching": "skill_matching", "rag_fallback": "rag_fallback"})
     workflow.add_edge("rag_fallback", "skill_matching")
     workflow.add_edge("skill_matching", "gap_analysis")
-    workflow.add_edge("gap_analysis", "opportunity_simulation")
-    workflow.add_edge("opportunity_simulation", "time_to_ready")
-    workflow.add_edge("time_to_ready", "gemini_tool_agent")
-    workflow.add_conditional_edges("gemini_tool_agent", route_after_tool_agent, {"tool_execution": "tool_execution", "gemini_reasoning": "gemini_reasoning"})
-    workflow.add_edge("tool_execution", "tool_trace")
-    workflow.add_edge("tool_trace", "gemini_tool_agent")
-    workflow.add_conditional_edges("gemini_reasoning", route_after_gemini, {"training_recommendations": "training_recommendations", "deterministic_explanation": "deterministic_explanation"})
-    workflow.add_edge("deterministic_explanation", "training_recommendations")
-    workflow.add_edge("training_recommendations", "report")
-    workflow.add_edge("report", END)
+    workflow.add_edge("gap_analysis", "time_to_ready")
+    workflow.add_edge("time_to_ready", "gemini_reasoning")
+    workflow.add_edge("gemini_reasoning", "training_recommendations")
+    workflow.add_edge("training_recommendations", END)
     workflow.add_edge("error_handler", END)
 
     return workflow.compile()
@@ -1361,9 +1357,7 @@ def run_skill_gap_workflow(
         result["free_only"] = free_only
     if "warnings" not in result:
         result["warnings"] = []
-    if "node_status" not in result:
-        result["node_status"] = {}
-    if "status" not in result:
+    if result.get("status") != "error":
         result["status"] = "completed"
     if "report" not in result:
         result["report"] = {}

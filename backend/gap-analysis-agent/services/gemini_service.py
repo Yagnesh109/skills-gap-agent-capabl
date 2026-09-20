@@ -372,7 +372,7 @@ class GeminiService:
 
         last_error = None
         raw_text = None
-        for attempt in range(3):
+        for attempt in range(1):
             try:
                 raw_text = await self._call_gemini_with_timeout(model, prompt)
                 last_error = None
@@ -381,9 +381,7 @@ class GeminiService:
                 err_msg = str(exc)
                 last_error = exc
                 if "429" in err_msg or "quota" in err_msg.lower() or "resourceexhausted" in err_msg.lower():
-                    if attempt < 2:
-                        await asyncio.sleep(2 * (attempt + 1))
-                        continue
+                    break
                 break
 
         if last_error is not None:

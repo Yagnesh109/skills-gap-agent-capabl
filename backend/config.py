@@ -20,6 +20,7 @@ class Settings:
         "GEMINI_API_KEY_GAP_ANALYSIS",
         os.getenv("GEMINI_API_KEY_2", os.getenv("GEMINI_API_KEY", "")),
     )
+    GEMINI_CHAT_API_KEY: str = os.getenv("GEMINI_CHAT_API_KEY", "")
     JOOBLE_API_KEY: str = os.getenv("JOOBLE_API_KEY", "")
 
     # Gemini LLM configuration

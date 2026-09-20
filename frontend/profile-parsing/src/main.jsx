@@ -32,6 +32,10 @@ function App() {
   const [progressDisconnected, setProgressDisconnected] = React.useState(false)
   const [widgetError, setWidgetError] = React.useState(null)
   const eventSourceRef = React.useRef(null)
+  const [chatOpen, setChatOpen] = React.useState(false)
+  const [chatInput, setChatInput] = React.useState('')
+  const [chatMessages, setChatMessages] = React.useState([])
+  const autoSimulationRunRef = React.useRef('')
 
   const matchedJobs = workflow?.matched_jobs || workflow?.matching_results || []
   const gaps = workflow?.skill_gaps || workflow?.gap_analyses || []
@@ -45,8 +49,22 @@ function App() {
     total_learning_weeks: 0,
     total_cost_inr: 0,
   }
-  const courses = workflow?.training_recommendations || []
-  const missingSkills = [...new Set(gaps.flatMap((gap) => gap.missing_skills || []))]
+  const missingSkills = [...new Set(gaps.flatMap((gap) => (gap.missing_skills || []).map((s) => (typeof s === 'string' ? s : s?.skill || String(s || '')))).filter(Boolean))]
+  const missingSkillKeys = missingSkills.map((skill) => String(skill || '').toLowerCase())
+  const courses = workflow?.training_recommendations?.length
+    ? workflow.training_recommendations
+    : (workflow?.course_catalog || []).filter((course) =>
+        (course.skills_taught || []).some((skill) => missingSkillKeys.some((missing) => {
+          const courseSkill = String(skill).toLowerCase()
+          return courseSkill === missing || courseSkill.includes(missing) || missing.includes(courseSkill)
+        }))
+      ).map((course) => ({
+        ...course,
+        course_name: course.title,
+        jobs_unlocked: 0,
+        learning_impact: null,
+        reasoning: 'Available from the PathWise course catalog.',
+        }))
   const currentJobs = workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0
 
   const [widgetLogs, setWidgetLogs] = React.useState([])
@@ -58,6 +76,12 @@ function App() {
     if (eventSourceRef.current) eventSourceRef.current.close()
     eventSourceRef.current = null
   }
+
+  React.useEffect(() => {
+    if (notice?.type !== 'info') return undefined
+    const timer = window.setTimeout(() => setNotice(null), 10000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
 
   React.useEffect(() => {
     const defaultSkills = missingSkills.slice(0, 4).join(', ')
@@ -72,7 +96,7 @@ function App() {
     }
   }, [workflow])
 
-  async function runCareerSimulator() {
+  async function runCareerSimulator(skillsOverride = null) {
     if (!profile) return
     setSimulatorBusy(true)
     setNotice(null)
@@ -84,7 +108,7 @@ function App() {
         location: location || profile.location || '',
         interests: profile.interests || [],
         free_only: freeOnly,
-        add_skills: simulatorInput.split(',').map((item) => item.trim()).filter(Boolean),
+        add_skills: (skillsOverride || simulatorInput.split(',')).map((item) => item.trim()).filter(Boolean),
       }
       const response = await fetch(`${API_BASE_URL}/api/career-simulator/simulate`, {
         method: 'POST',
@@ -109,10 +133,23 @@ function App() {
 
   React.useEffect(() => () => closeEventSource(), [])
 
-  async function startWorkflowRun(payload, successText) {
+  function appendProgressEvent(node, label, status, message, eventType = 'progress') {
+    setProgressEvents((previous) => [...previous, {
+      run_id: 'local-upload',
+      event_type: eventType,
+      node,
+      label,
+      status,
+      message,
+      timestamp: new Date().toISOString(),
+      data: {},
+    }])
+  }
+
+  async function startWorkflowRun(payload, successText, preserveProgressEvents = false, preserveNotice = false) {
     closeEventSource()
-    setNotice(null)
-    setProgressEvents([])
+    if (!preserveNotice) setNotice(null)
+    if (!preserveProgressEvents) setProgressEvents([])
     setRunStatus('starting')
     setProgressDisconnected(false)
     setWidgetError(null)
@@ -131,16 +168,39 @@ function App() {
       }
       source.addEventListener('progress', handleProgress)
       source.addEventListener('complete', async (message) => {
-        const event = JSON.parse(message.data)
-        setProgressEvents((previous) => [...previous, event])
-        const resultResponse = await fetch(`${API_BASE_URL}/api/agent/runs/${data.run_id}`)
-        const result = await resultResponse.json()
-        if (!resultResponse.ok || result.status === 'running') throw new Error(result.detail || 'Workflow result is not ready.')
-        setWorkflow(result)
-        setRunStatus('completed')
-        closeEventSource()
-        const warningNote = result.warnings?.length ? ` ${result.warnings.length} recoverable issue${result.warnings.length === 1 ? '' : 's'} handled.` : ''
-        setNotice({ type: 'success', text: `${successText}${warningNote}` })
+        try {
+          const event = JSON.parse(message.data)
+          setProgressEvents((previous) => [...previous, event])
+          let result = null
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const resultResponse = await fetch(`${API_BASE_URL}/api/agent/runs/${data.run_id}`)
+            if (resultResponse.ok) {
+              const resData = await resultResponse.json()
+              if (resData && resData.status !== 'running') {
+                result = resData
+                break
+              }
+            }
+            await new Promise((resolve) => setTimeout(resolve, 400))
+          }
+          if (!result) {
+            const fallbackResp = await fetch(`${API_BASE_URL}/api/agent/runs/${data.run_id}`)
+            result = await fallbackResp.json()
+          }
+          if (!result || result.status === 'error') {
+            throw new Error(result?.detail || 'Workflow returned an error state.')
+          }
+          setWorkflow(result)
+          setRunStatus('completed')
+          closeEventSource()
+          const warningNote = result.warnings?.length ? ` ${result.warnings.length} recoverable issue${result.warnings.length === 1 ? '' : 's'} handled.` : ''
+          if (successText) setNotice({ type: 'success', text: `${successText}${warningNote}` })
+        } catch (err) {
+          console.error('Error loading workflow results:', err)
+          setWidgetError(err.message)
+          setRunStatus('failed')
+          closeEventSource()
+        }
       })
       source.addEventListener('error', (message) => {
         if (message?.data) {
@@ -148,7 +208,10 @@ function App() {
           setRunStatus('failed')
           setWidgetError('The career workflow failed. Review the live log for details.')
           closeEventSource()
-        } else setProgressDisconnected(true)
+        } else {
+          // Normal connection closure from completed stream
+          setProgressDisconnected(true)
+        }
       })
     } catch (error) {
       setRunStatus('failed')
@@ -258,14 +321,24 @@ function App() {
     setProgressDisconnected(false)
     setWidgetError(null)
     setWidgetOpen(true)
+    let documentParseStarted = false
+    let documentParseCompleted = false
     try {
       let parseResponse
       if (mode === 'file') {
         if (!file) throw new Error('Please select a resume file first.')
+        setChatMessages([])
+        setChatOpen(true)
+        setNotice({ type: 'info', text: 'Until the response is generated, you can talk with the chat assistant. Its results are based on your resume.' })
+        documentParseStarted = true
+        appendProgressEvent('profile_parsing', 'Document Extractor', 'running', `Uploading and reading "${file.name}"...`)
         const body = new FormData(); body.append('file', file)
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse`, { method: 'POST', body })
       } else if (mode === 'voice') {
         if (!voiceTranscript.trim()) throw new Error('Please record your resume details using voice first.')
+        setChatMessages([])
+        setChatOpen(true)
+        setNotice({ type: 'info', text: 'Until the response is generated, you can talk with the chat assistant. Its results are based on your resume.' })
         addLog('Document Extractor Agent', 'Processing voice transcript tokens...', 'info')
         setCurrentStepIndex(1)
         setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
@@ -277,11 +350,18 @@ function App() {
         })
       } else {
         if (!text.trim()) throw new Error('Please paste resume text first.')
+        setChatMessages([])
+        setChatOpen(true)
+        setNotice({ type: 'info', text: 'Until the response is generated, you can talk with the chat assistant. Its results are based on your resume.' })
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
       }
       const parseData = await parseResponse.json()
       if (!parseResponse.ok) throw new Error(parseData.detail || 'Profile extraction failed.')
       const parsedProfile = parseData.profile || {}
+      if (mode === 'file') {
+        documentParseCompleted = true
+        appendProgressEvent('profile_parsing', 'Document Extractor', 'completed', `Document read and profile extracted from "${file.name}".`)
+      }
       setProfile(parsedProfile)
       const selectedRole = targetRole || parsedProfile.target_role || parsedProfile.experience?.[0]?.role || ''
       const selectedLoc = location || parsedProfile.location || ''
@@ -293,7 +373,7 @@ function App() {
       setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
       addLog('Skill Match Agent (Jooble & Vector DB)', `Searching live Jooble market job vector embeddings for "${selectedRole || 'Software Engineer'}"...`, 'info')
 
-      await startWorkflowRun({ ...parsedProfile, skills: parsedProfile.skills || [], target_role: selectedRole, location: selectedLoc, free_only: freeOnly }, 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.')
+      await startWorkflowRun({ ...parsedProfile, skills: parsedProfile.skills || [], target_role: selectedRole, location: selectedLoc, free_only: freeOnly }, '', true, true)
 
       setCurrentStepIndex(3)
       setActiveAgentName('Gap Analysis Agent (LangGraph)')
@@ -310,8 +390,10 @@ function App() {
       addLog('Report Generation Agent', 'Career Report ready for download & view!', 'success')
       addLog('Orchestrator Agent', 'All multi-agent workflow nodes executed successfully!', 'success')
       setIsFinished(true)
-      setNotice({ type: 'success', text: 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.' })
     } catch (error) {
+      if (documentParseStarted && !documentParseCompleted) {
+        appendProgressEvent('profile_parsing', 'Document Extractor', 'failed', error.message, 'error')
+      }
       setRunStatus('failed')
       setWidgetError(error.message)
       setWidgetOpen(true)
@@ -391,9 +473,31 @@ function App() {
         runStatus={runStatus}
         error={widgetError}
         disconnected={progressDisconnected}
-        onComplete={() => setWidgetOpen(false)}
+        onComplete={() => {
+          setWidgetOpen(false)
+          setChatOpen(false)
+        }}
+        onOpen={() => setWidgetOpen(true)}
+        onChat={() => { setWidgetOpen(false); setChatOpen(true) }}
       />
-
+      {!chatOpen && progressEvents.length > 0 && (
+        <button className="resume-chat-launcher" onClick={() => setChatOpen(true)} title="Open Resume Agent" aria-label="Open Resume Agent">
+          <img src="/icon.png" alt="" />
+          <span>Chat</span>
+        </button>
+      )}
+      
+      {chatOpen && (
+        <ResumeChatPanel
+          profile={profile}
+          workflow={workflow}
+          input={chatInput}
+          setInput={setChatInput}
+          messages={chatMessages}
+          setMessages={setChatMessages}
+          onClose={() => setChatOpen(false)}
+        />
+      )}
       <header className="app-navbar">
         <div className="navbar-brand">
           <img src="/icon.png" alt="Pathwise Icon" className="brand-logo-img" />
@@ -401,11 +505,6 @@ function App() {
         </div>
 
         <div className="nav-actions">
-          {(progressEvents.length > 0) && (
-            <button className="ghost-button" onClick={() => setWidgetOpen(true)} title="View live agent working transparency drawer">
-              ⚡ View Active Agents
-            </button>
-          )}
           <button className="quiet-button" onClick={reset} title="Reset session and start a new career assessment">
             <span aria-hidden="true">↻</span> Start New Assessment
           </button>
@@ -550,9 +649,16 @@ function App() {
               </div>
             )}
 
-            <button className="accent-button full-width" onClick={runFullAgentPipeline}>
-              Analyze Resume <span>⚡</span>
-            </button>
+            {profile ? (
+              <div className="profile-snapshot-wrap">
+                <ProfileSnapshot profile={profile} />
+                <button className="ghost-button full-width margin-top-sm" onClick={rerunCareerAnalysis}>
+                  🔄 Refresh Analysis
+                </button>
+              </div>
+            ) : (
+              <div className="empty-snapshot">Extracted profile details will appear here.</div>
+            )}
           </div>
 
           <div className="profile-panel">
@@ -586,21 +692,14 @@ function App() {
               <span>Free courses only</span>
             </label>
 
-            {profile ? (
-              <div>
-                <ProfileSnapshot profile={profile} />
-                <button className="ghost-button full-width margin-top-sm" onClick={rerunCareerAnalysis}>
-                  🔄 Refresh Analysis
-                </button>
-              </div>
-            ) : (
-              <div className="empty-snapshot">Extracted profile details will appear here.</div>
-            )}
+            <button className="accent-button full-width analyze-right-button" onClick={runFullAgentPipeline}>
+              Analyze Resume <span>⚡</span>
+            </button>
           </div>
         </section>
 
         {notice && (
-          <div className={`notice ${notice.type}`} role="status">
+          <div className={`notice ${notice.type} ${notice.type === 'info' ? 'notice-toast' : ''}`} role="status">
             <span>{notice.type === 'success' ? '✓' : '!'}</span>
             <span>{notice.text}</span>
           </div>
@@ -624,6 +723,7 @@ function App() {
             setSimulatorInput={setSimulatorInput}
             runCareerSimulator={runCareerSimulator}
             simulatorBusy={simulatorBusy}
+            setNotice={setNotice}
           />
         )}
       </main>
@@ -640,6 +740,59 @@ function PanelHeading({ number, title, label, optional }) {
       </div>
       <span className={`micro-label ${optional ? 'optional' : ''}`}>{label}</span>
     </div>
+  )
+}
+
+function ResumeChatPanel({ profile, workflow, input, setInput, messages, setMessages, onClose }) {
+  const [sending, setSending] = React.useState(false)
+
+  async function sendMessage(event) {
+    event.preventDefault()
+    const question = input.trim()
+    if (!question || sending) return
+    const nextMessages = [...messages, { role: 'user', text: question }]
+    setMessages(nextMessages)
+    setInput('')
+    setSending(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/profile/resume-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: question,
+          profile: profile || {},
+          workflow: workflow || {},
+          history: messages.slice(-8).map(({ role, text }) => ({ role, text })),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Resume assistant is unavailable.')
+      setMessages((current) => [...current, { role: 'assistant', text: data.reply }])
+    } catch (error) {
+      setMessages((current) => [...current, { role: 'assistant', text: error.message }])
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <aside className="resume-chat-panel">
+      <div className="resume-chat-header">
+        <div className="resume-chat-identity">
+            <div className="resume-chat-avatar"><img src="/agenticon.png" alt="" /></div>
+          <div><strong>Resume Guide</strong><span>Grounded in your analysis</span></div>
+        </div>
+        <button className="resume-chat-close" onClick={onClose} aria-label="Close resume chat">×</button>
+      </div>
+      <div className="resume-chat-body">
+        <div className="resume-chat-message assistant">{workflow ? 'Your analysis is ready. Ask me about your resume, matched roles, skill gaps, or learning paths.' : profile ? 'I have your resume profile. Ask me anything while the rest of the analysis continues.' : 'I’m processing your uploaded resume. Chat will be available as soon as the profile is extracted.'}</div>
+        {messages.map((message, index) => <div className={`resume-chat-message ${message.role}`} key={`${message.role}-${index}`}>{message.text}</div>)}
+      </div>
+      <form className="resume-chat-compose" onSubmit={sendMessage}>
+        <input value={input} onChange={(event) => setInput(event.target.value)} disabled={!profile || sending} placeholder={profile ? 'Ask about your resume...' : 'Extracting resume profile...'} aria-label="Ask about your resume" />
+        <button type="submit" disabled={sending} aria-label="Send question">{sending ? '…' : '↑'}</button>
+      </form>
+    </aside>
   )
 }
 
@@ -662,7 +815,7 @@ function ProfileSnapshot({ profile }) {
   )
 }
 
-function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly, careerSimulator, simulatorInput, setSimulatorInput, runCareerSimulator, simulatorBusy }) {
+function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly, careerSimulator, simulatorInput, setSimulatorInput, runCareerSimulator, simulatorBusy, setNotice }) {
   const timeToReady = workflow?.time_to_ready || {}
   const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
     current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
@@ -771,39 +924,6 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </section>
       </div>
 
-      <section className="opportunity-section">
-        <SectionTitle number="C" title="Opportunity Matrix & Job Unlock Impact" meta="Vector Market Simulation" />
-        <p className="plain-helper">We simulated each missing skill combination against live market vector embeddings to measure job growth.</p>
-        
-        <div className="opportunity-grid">
-          {opportunities.slice(0, 6).map((item) => (
-            <div className="opportunity-card" key={item.skill}>
-              <div className="op-card-header">
-                <div className="op-skill-info">
-                  <strong className="op-skill-name">{item.skill}</strong>
-                  <span className="op-skill-time">
-                    ⏱️ {item.duration_weeks ? `${item.duration_weeks} wks est. learning time` : 'Market demand signal'}
-                  </span>
-                </div>
-                <div className="op-unlock-badge">
-                  <span className="op-unlock-num">+{item.jobs_unlocked}</span>
-                  <span className="op-unlock-label">unlocked</span>
-                </div>
-              </div>
-              <div className="op-progress-track">
-                <div 
-                  className="op-progress-fill" 
-                  style={{ width: `${Math.min(100, Math.max(25, (item.jobs_unlocked || 1) * 35))}%` }} 
-                />
-              </div>
-            </div>
-          ))}
-          {!opportunities.length && <EmptyState text="No extra job opportunities detected in this simulation." />}
-        </div>
-      </section>
-
-      <ToolActivity trace={workflow?.tool_trace || []} />
-
       <SkillCombinationOptimizer
         profile={{
           ...(profile || {}),
@@ -813,129 +933,15 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         }}
       />
 
-      <section className="ai-evidence-section">
-        <SectionTitle number="D" title="AI recommendations" meta="Grounded Gemini Reasoning" />
-        <p className="plain-helper">These explanations are grounded in retrieved PathWise jobs and courses where evidence is available.</p>
-        <div className="ai-card-grid">
-          {aiReasoning.slice(0, 3).map((reasoning, index) => (
-            <AiRecommendationCard reasoning={reasoning} sourceById={sourceById} key={`ai-${index}`} />
-          ))}
-          {!aiReasoning.length && <EmptyState text="AI reasoning will appear when the workflow has gap analysis results." />}
-        </div>
-      </section>
-
       <section className="opportunity-section">
-        <SectionTitle number="E" title="What should I learn next?" meta="PathWise discovery engine" />
-        <p className="plain-helper">Based on your current profile, matching jobs, and the next skills that unlock the most opportunities.</p>
-        <div className="opportunity-grid">
-          {(opportunityDiscovery.skill_opportunities || []).slice(0, 6).map((item, index) => (
-            <div className="opportunity-card" key={`${item.skill}-${index}`}>
-              <div className="op-card-header">
-                <div className="op-skill-info">
-                  <strong className="op-skill-name">{item.skill}</strong>
-                  <span className="op-skill-time">⏱️ {item.learning_weeks || 0} week(s)</span>
-                </div>
-                <div className="op-unlock-badge">
-                  <span className="op-unlock-num">+{item.jobs_unlocked || 0}</span>
-                  <span className="op-unlock-label">jobs</span>
-                </div>
-              </div>
-              <div className="op-progress-track">
-                <div className="op-progress-fill" style={{ width: `${Math.min(100, ((item.opportunity_rate || 0) * 8) + 15)}%` }} />
-              </div>
-              <div className="course-stats" style={{ marginTop: '0.9rem' }}>
-                <strong>{item.learning_cost_inr ? formatInr(item.learning_cost_inr) : '₹0'}</strong>
-                <span>learning cost</span>
-              </div>
-              <p style={{ marginTop: '0.7rem', fontSize: '0.85rem', color: '#7d87ad' }}>
-                Opportunity rate: {item.opportunity_rate ?? 0}/week · {item.is_free ? 'free path' : 'paid path'}
-              </p>
-            </div>
+        <SectionTitle title="Your learning path" meta="PathWise discovery engine" />
+        <p className="plain-helper">Your recommended sequence of skills to strengthen next.</p>
+        <div className="direct-learning-path">
+          {(opportunityDiscovery.recommended_sequence || []).slice(0, 5).map((skill, index) => (
+            <span className="direct-learning-step" key={`${skill}-${index}`}><b>{index + 1}</b>{skill}</span>
           ))}
-          {!((opportunityDiscovery.skill_opportunities || []).length) && <EmptyState text="No discovery candidates are available yet for this profile." />}
+          {!opportunityDiscovery.recommended_sequence?.length && <EmptyState text="No learning path is available for this profile yet." />}
         </div>
-        <div className="learning-plan" style={{ marginTop: '1rem' }}>
-          <div className="learning-plan-total">
-            Best sequence: {(opportunityDiscovery.recommended_sequence || []).slice(0, 5).join(' → ') || 'No sequence yet'}
-          </div>
-          <div className="learning-plan-total">
-            Unique jobs unlocked: +{opportunityDiscovery.total_jobs_unlocked || 0} · {opportunityDiscovery.total_learning_weeks || 0} weeks · {formatInr(opportunityDiscovery.total_cost_inr || 0)}
-          </div>
-        </div>
-      </section>
-
-      <section className="opportunity-section" style={{ marginTop: '1.5rem' }}>
-        <SectionTitle number="F" title="Career What-If Simulator" meta="Before / after learning plan" />
-        <p className="plain-helper">Test a specific skill plan to see how many more jobs open, how much time it takes, and whether it fits your budget.</p>
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '1rem' }}>
-          <textarea
-            value={simulatorInput}
-            onChange={(event) => setSimulatorInput(event.target.value)}
-            rows={3}
-            placeholder="Example: Docker, Kubernetes, SQL"
-            style={{ flex: '1 1 260px', minHeight: '96px', borderRadius: '12px', border: '1px solid #26314d', background: '#0a122e', color: '#eef3ff', padding: '0.9rem 1rem', resize: 'vertical' }}
-          />
-          <button className="accent-button" onClick={runCareerSimulator} disabled={simulatorBusy || !profile} style={{ alignSelf: 'flex-start' }}>
-            {simulatorBusy ? 'Simulating…' : 'Run What-If'}
-          </button>
-        </div>
-        {careerSimulator ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
-            <div className="opportunity-card">
-              <div className="op-card-header">
-                <div className="op-skill-info">
-                  <strong className="op-skill-name">Current state</strong>
-                  <span className="op-skill-time">Before learning</span>
-                </div>
-              </div>
-              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
-                <strong>{careerSimulator.current?.matching_jobs ?? 0}</strong>
-                <span>jobs match</span>
-              </div>
-              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
-                Avg. match: {careerSimulator.current?.average_match ?? 0.0}
-              </p>
-            </div>
-            <div className="opportunity-card">
-              <div className="op-card-header">
-                <div className="op-skill-info">
-                  <strong className="op-skill-name">Projected state</strong>
-                  <span className="op-skill-time">After learning</span>
-                </div>
-              </div>
-              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
-                <strong>{careerSimulator.simulated?.matching_jobs ?? 0}</strong>
-                <span>jobs match</span>
-              </div>
-              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
-                Avg. match: {careerSimulator.simulated?.average_match ?? 0.0}
-              </p>
-            </div>
-            <div className="opportunity-card">
-              <div className="op-card-header">
-                <div className="op-skill-info">
-                  <strong className="op-skill-name">Learning impact</strong>
-                  <span className="op-skill-time">Net gain</span>
-                </div>
-              </div>
-              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
-                <strong>+{careerSimulator.change?.jobs_unlocked ?? 0}</strong>
-                <span>jobs unlocked</span>
-              </div>
-              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
-                Match lift: {careerSimulator.change?.average_match_change ?? 0.0}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <EmptyState text="Select a skill plan to simulate how your next learning choices could change your career options." />
-        )}
-        {careerSimulator && (
-          <div className="learning-plan" style={{ marginTop: '1rem' }}>
-            <div className="learning-plan-total">Skills added: {(careerSimulator.selected_skills || []).join(', ') || 'No skills selected'}</div>
-            <div className="learning-plan-total">Plan fit: {careerSimulator.constraints?.within_time_limit !== false && careerSimulator.constraints?.within_budget !== false ? 'Within your constraints' : 'Needs adjustment'} · {careerSimulator.learning?.total_weeks ?? 0} weeks · {formatInr(careerSimulator.learning?.total_cost_inr ?? 0)}</div>
-          </div>
-        )}
       </section>
 
       <section className="learning-section">
@@ -943,7 +949,7 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         <p className="plain-helper">These course recommendations are chosen by the Training Agent to close your top skill gaps.</p>
         <div className="course-grid">
           {courses.map((course) => (
-            <CourseCard course={course} sourceById={sourceById} key={course.course_name} />
+            <CourseCard course={course} sourceById={sourceById} key={course.course_name || course.course_id} />
           ))}
           {!courses.length && <EmptyState text="Your learning plan will appear when the workflow finds a course match." />}
         </div>
@@ -957,7 +963,10 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
           <p>Download your complete PDF summary including job matches, skill gaps, and training pathways.</p>
           <button 
             className="accent-button download-pdf-btn" 
-            onClick={() => generatePdfReport({ profile, workflow, targetRole, location })}
+            onClick={() => {
+              setNotice({ type: 'info', text: 'Your report is being created. This may take a minute.' })
+              setTimeout(() => generatePdfReport({ profile, workflow, targetRole, location }), 100)
+            }}
           >
             📥 Download Report (PDF)
           </button>
@@ -1240,7 +1249,7 @@ function JobCard({ job, jobDetails, readiness, evidence }) {
       </div>}
 
       {detailsOpen && <div className="job-card-panel job-details-panel">
-        <div><h4>Required Skills</h4><div className="required-skill-list">{requiredSkills.map((skill) => { const isMatched = matchedSkills.some((item) => item.toLowerCase() === String(skill).toLowerCase()); return <span className={isMatched ? 'required-skill matched' : 'required-skill missing'} key={skill}>{isMatched ? '✓' : '✕'} {skill}</span> })}</div></div>
+        <div><h4>Required Skills</h4><div className="required-skill-list">{requiredSkills.map((skill) => { const isMatched = matchedSkills.some((item) => String(item || '').toLowerCase() === String(skill || '').toLowerCase()); return <span className={isMatched ? 'required-skill matched' : 'required-skill missing'} key={skill}>{isMatched ? '✓' : '✕'} {skill}</span> })}</div></div>
         <div><h4>Why you're missing</h4>{missingSkills.length ? missingSkills.map((skill) => <div className="missing-reason" key={skill}><strong>{skill}</strong><span>Required by this role{jobDetails.description ? ` — listed in the job requirements for ${job.title || 'this position'}.` : '.'}</span></div>) : <span className="job-card-muted">No missing skills identified.</span>}</div>
         {evidence && <div><h4>Evidence</h4><SourceChips sourceIds={[evidence.source_id]} sourceById={{ [evidence.source_id]: evidence }} /></div>}
         <div><h4>Recommended Learning</h4>{courses.length ? courses.map((course) => <div className="job-recommendation" key={`recommend-${course.course_id}`}><strong>{(course.skills_covered || []).join(', ') || course.title}</strong><span>{course.title} · {formatWeeks(course.duration_weeks)} weeks · {course.is_free ? 'Free' : formatInr(course.price_inr)}</span></div>) : <span className="job-card-muted">Learning plan unavailable for the current course catalog.</span>}</div>
@@ -1324,7 +1333,7 @@ function CourseCard({ course, sourceById }) {
         <span>Recommended course</span>
         <b>{course.learning_impact ?? '—'} impact</b>
       </div>
-      <h3>{course.course_name}</h3>
+      <h3>{course.course_name || course.title}</h3>
       <p>{course.provider || 'Course catalog'} · {course.duration_weeks || '—'} weeks</p>
       <div className="course-stats">
         <strong>+{course.jobs_unlocked || 0}</strong>
@@ -1337,8 +1346,49 @@ function CourseCard({ course, sourceById }) {
   )
 }
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('UI Render Error caught by ErrorBoundary:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '40px', maxWidth: '700px', margin: '60px auto', background: '#ffffff', borderRadius: '16px', border: '1px solid #fee2e2', boxShadow: '0 20px 40px rgba(15,23,42,0.1)', textAlign: 'center', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+          <div style={{ fontSize: '40px', marginBottom: '16px' }}>⚠️</div>
+          <h2 style={{ color: '#0f172a', fontSize: '20px', fontWeight: '700', marginBottom: '8px' }}>Interface Encountered an Issue</h2>
+          <p style={{ color: '#64748b', fontSize: '14px', marginBottom: '20px', lineHeight: '1.5' }}>
+            {this.state.error?.message || 'An unexpected rendering error occurred.'}
+          </p>
+          <button
+            style={{ padding: '10px 22px', background: 'linear-gradient(135deg, #4f46e5, #4338ca)', color: '#ffffff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '14px' }}
+            onClick={() => {
+              this.setState({ hasError: false, error: null })
+              window.location.reload()
+            }}
+          >
+            Reload Application
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 )

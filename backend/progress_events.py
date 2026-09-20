@@ -14,20 +14,11 @@ from typing import Any, AsyncIterator, Dict, Set
 PIPELINE_NODES = (
     "profile_parsing",
     "job_search",
-    "job_search_fallback",
     "rag_retrieval",
-    "rag_fallback",
     "skill_matching",
     "gap_analysis",
-    "opportunity_simulation",
     "time_to_ready",
-    "gemini_tool_agent",
-    "tool_execution",
-    "tool_trace",
-    "gemini_reasoning",
-    "deterministic_explanation",
     "training_recommendations",
-    "report",
 )
 
 
@@ -162,7 +153,7 @@ def _label(node: str) -> str:
         "skill_matching": "Semantic Matching",
         "gap_analysis": "Gap Analysis",
         "opportunity_simulation": "Opportunity Analysis",
-        "time_to_ready": "Time-to-Ready",
+        "time_to_ready": "Readiness + AI Reasoning",
         "gemini_tool_agent": "AI Tool Selection",
         "tool_execution": "Tool Execution",
         "tool_trace": "Tool Results",

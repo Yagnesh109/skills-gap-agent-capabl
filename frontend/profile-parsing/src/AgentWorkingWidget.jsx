@@ -1,16 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 
 const pipelineSteps = [
-  { node: 'profile_parsing', name: 'Profile Parse', icon: '🧾' },
-  { node: 'job_search', name: 'Job Search', icon: '🔍' },
-  { node: 'rag_retrieval', name: 'RAG Retrieval', icon: '📚' },
-  { node: 'skill_matching', name: 'Skill Matching', icon: '🧠' },
-  { node: 'gap_analysis', name: 'Gap Analysis', icon: '⚡' },
-  { node: 'opportunity_simulation', name: 'Opportunity Sim', icon: '📈' },
-  { node: 'time_to_ready', name: 'Time-to-Ready', icon: '⏱️' },
-  { node: 'gemini_reasoning', name: 'AI Reasoning', icon: '🤖' },
-  { node: 'training_recommendations', name: 'Training', icon: '🎓' },
-  { node: 'report', name: 'Report', icon: '📝' },
+  { nodes: ['profile_parsing'], name: 'Profile Parse', icon: '🧾' },
+  { nodes: ['job_search'], name: 'Job Search', icon: '🔍' },
+  { nodes: ['rag_retrieval'], name: 'RAG Retrieval', icon: '📚' },
+  { nodes: ['skill_matching'], name: 'Skill Matching', icon: '🧠' },
+  { nodes: ['gap_analysis'], name: 'Gap Analysis', icon: '⚡' },
+  { nodes: ['time_to_ready', 'gemini_reasoning', 'deterministic_explanation'], name: 'Readiness + AI Reasoning', icon: '🤖' },
+  { nodes: ['training_recommendations'], name: 'Training Path', icon: '🎓' },
 ]
 
 function eventTime(timestamp) {
@@ -18,7 +15,7 @@ function eventTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString([], { hour12: false, second: '2-digit' })
 }
 
-export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disconnected, onComplete }) {
+export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disconnected, onComplete, onOpen, onChat }) {
   const [isMinimized, setIsMinimized] = useState(false)
   const [isExpandedLogs, setIsExpandedLogs] = useState(true)
   const logsEndRef = useRef(null)
@@ -27,13 +24,39 @@ export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disc
     if (logsEndRef.current && isExpandedLogs) logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
   }, [events, isExpandedLogs])
 
-  if (!isOpen) return null
+  if (!isOpen) {
+    return events.length > 0 ? (
+      <button className="agent-log-launcher" onClick={onOpen} title="Open agent activity log" aria-label="Open agent activity log">
+        <span className="agent-log-launcher-dot" />
+        <span>⌁</span>
+      </button>
+    ) : null
+  }
 
   const latestByNode = events.reduce((acc, event) => ({ ...acc, [event.node]: event }), {})
-  const completedCount = pipelineSteps.filter(({ node }) => latestByNode[node]?.status === 'completed').length
-  const latestEvent = events[events.length - 1]
-  const isFinished = runStatus === 'completed'
-  const isFailed = runStatus === 'failed'
+  const getStepStatus = (step) => {
+    const stepEvents = step.nodes.map((node) => latestByNode[node]).filter(Boolean)
+    if (step.nodes.includes('time_to_ready')) {
+      if (stepEvents.some((event) => event.status === 'failed')) return 'failed'
+      const readinessComplete = latestByNode.time_to_ready?.status === 'completed'
+        && /analysis generated|analysis complete/i.test(latestByNode.time_to_ready?.message || '')
+      if (readinessComplete || (runStatus === 'completed' && latestByNode.time_to_ready?.status === 'completed')) return 'completed'
+      if (latestByNode.time_to_ready?.status === 'running' || latestByNode.time_to_ready?.status === 'completed') return 'running'
+      return 'pending'
+    }
+    const latest = stepEvents[stepEvents.length - 1]
+    if (latest?.status) return latest.status
+    const stepIndex = pipelineSteps.indexOf(step)
+    const previousStepsComplete = stepIndex > 0 && pipelineSteps
+      .slice(0, stepIndex)
+      .every((previousStep) => getStepStatus(previousStep) === 'completed')
+    return previousStepsComplete ? 'running' : 'pending'
+  }
+  const completedCount = pipelineSteps.filter((step) => getStepStatus(step) === 'completed').length
+  const latestEvent = events && events.length > 0 ? events[events.length - 1] : null
+  const isWorkflowEventComplete = latestEvent?.node === 'workflow' && latestEvent?.status === 'completed'
+  const isFinished = runStatus === 'completed' || isWorkflowEventComplete
+  const isFailed = runStatus === 'failed' || (latestEvent?.node === 'workflow' && latestEvent?.status === 'failed')
   const title = isFinished ? 'All agents completed workflow' : isFailed ? 'Workflow needs attention' : latestEvent?.label || 'Waiting for agent events'
 
   return (
@@ -62,11 +85,11 @@ export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disc
             </div>
             <div className="widget-step-pills">
               {pipelineSteps.map((step) => {
-                const current = latestByNode[step.node]
-                const stepStatus = current?.status || 'pending'
+                const current = step.nodes.map((node) => latestByNode[node]).filter(Boolean).pop()
+                const stepStatus = getStepStatus(step)
                 return (
-                  <div key={step.node} className={`step-pill ${stepStatus === 'completed' ? 'done' : stepStatus === 'running' ? 'current' : stepStatus === 'failed' ? 'failed' : 'pending'}`} title={current?.message || step.name}>
-                    <span className="step-pill-icon">{step.icon}</span>
+                  <div key={step.name} className={`step-pill ${stepStatus === 'completed' ? 'done' : stepStatus === 'running' ? 'current' : stepStatus === 'failed' ? 'failed' : 'pending'}`} title={current?.message || step.name}>
+                    <span className="step-pill-icon"><img src="/agenticon.png" alt="" /></span>
                     <span className="step-pill-name">{step.name}</span>
                     {stepStatus === 'completed' && <span className="step-pill-check">✓</span>}
                     {stepStatus === 'running' && <span className="step-pill-spinner" />}
@@ -75,7 +98,6 @@ export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disc
                 )
               })}
             </div>
-            {disconnected && <div className="widget-inline-warning">Live connection interrupted; the browser is retrying.</div>}
             {error && <div className="widget-inline-error">{error}</div>}
             <div className="widget-short-logs">
               <div className="short-logs-bar">
@@ -91,7 +113,12 @@ export function AgentWorkingWidget({ isOpen, events = [], runStatus, error, disc
                 <div ref={logsEndRef} />
               </div>}
             </div>
-            {isFinished && <button className="accent-button full-width widget-finish-btn" onClick={onComplete}>Explore Career Path & Training Plan <span>↓</span></button>}
+            {isFinished && (
+              <div className="widget-finished-actions">
+                <button className="accent-button full-width widget-finish-btn" onClick={onComplete}>View Analysis Results <span>↓</span></button>
+                <button className="ghost-button full-width widget-chat-btn" onClick={onChat}>Talk to Resume Agent <span>✦</span></button>
+              </div>
+            )}
           </div>
         )}
       </div>
