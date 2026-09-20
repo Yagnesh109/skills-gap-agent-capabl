@@ -163,5 +163,82 @@
     "url": "https://www.coursera.org",
     "price_inr": 4499,
     "is_free": false
+  },
+  {
+    "course_id": "CRS-116",
+    "title": "Deep Learning & Generative AI Specialization",
+    "provider": "DeepLearning.AI / Coursera",
+    "skills_taught": ["Deep Learning", "NLP", "Generative AI", "PyTorch", "AI", "LLMs"],
+    "duration_weeks": 6,
+    "difficulty": "Intermediate",
+    "url": "https://www.coursera.org",
+    "price_inr": 3999,
+    "is_free": false
+  },
+  {
+    "course_id": "CRS-117",
+    "title": "Modern C++ Programming & Data Structures",
+    "provider": "NPTEL",
+    "skills_taught": ["C++", "Data Structures", "Algorithms", "C"],
+    "duration_weeks": 8,
+    "difficulty": "Beginner",
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
+  },
+  {
+    "course_id": "CRS-118",
+    "title": "Enterprise Java & Spring Microservices",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["Java", "Spring Boot", "Microservices", "REST API", "Hibernate"],
+    "duration_weeks": 6,
+    "difficulty": "Intermediate",
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
+  },
+  {
+    "course_id": "CRS-119",
+    "title": "Cybersecurity Fundamentals & Network Defense",
+    "provider": "Skill India",
+    "skills_taught": ["Cybersecurity", "Network Security", "Linux", "Ethical Hacking", "Security"],
+    "duration_weeks": 6,
+    "difficulty": "Beginner",
+    "url": "https://www.skillindiadigital.gov.in",
+    "price_inr": 0,
+    "is_free": true
+  },
+  {
+    "course_id": "CRS-120",
+    "title": "Frontend Engineering with Angular & TypeScript",
+    "provider": "Coursera",
+    "skills_taught": ["Angular", "TypeScript", "RxJS", "Frontend Development"],
+    "duration_weeks": 5,
+    "difficulty": "Intermediate",
+    "url": "https://www.coursera.org",
+    "price_inr": 2999,
+    "is_free": false
+  },
+  {
+    "course_id": "CRS-121",
+    "title": "Big Data Engineering with Apache Spark & Hadoop",
+    "provider": "NPTEL",
+    "skills_taught": ["Apache Spark", "Big Data", "Hadoop", "Python", "SQL", "Data Engineering"],
+    "duration_weeks": 8,
+    "difficulty": "Intermediate",
+    "url": "https://nptel.ac.in/courses",
+    "price_inr": 0,
+    "is_free": true
+  },
+  {
+    "course_id": "CRS-122",
+    "title": "Cloud DevOps & Infrastructure as Code (Terraform)",
+    "provider": "Infosys Springboard",
+    "skills_taught": ["Terraform", "DevOps", "AWS", "CI/CD", "Docker", "Kubernetes"],
+    "duration_weeks": 4,
+    "difficulty": "Intermediate",
+    "url": "https://infyspringboard.onwingspan.com",
+    "price_inr": 0,
+    "is_free": true
   }
 ]

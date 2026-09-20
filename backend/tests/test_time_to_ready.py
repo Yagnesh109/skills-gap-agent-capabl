@@ -14,7 +14,7 @@ ttr = importlib.import_module("training-agent.time_to_ready")
 class TestCourseCatalogPricing(unittest.TestCase):
     def test_existing_catalog_has_valid_price_fields(self):
         courses = ttr.load_courses()
-        self.assertEqual(len(courses), 15)
+        self.assertGreaterEqual(len(courses), 15)
         for course in courses:
             self.assertIn("price_inr", course)
             self.assertIn("is_free", course)

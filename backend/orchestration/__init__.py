@@ -16,6 +16,7 @@ from .skill_gap_graph import (
     set_service_overrides,
     _reset_service_overrides,
 )
+from .career_simulator import simulate_career_path
 
 __all__ = [
     "SkillGapState",
@@ -24,4 +25,5 @@ __all__ = [
     "skill_gap_graph",
     "set_service_overrides",
     "_reset_service_overrides",
+    "simulate_career_path",
 ]

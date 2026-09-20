@@ -66,6 +66,17 @@ class SkillCombinationOptimizerRequest(BaseModel):
     budget_inr: float = Field(..., ge=0, description="Maximum learning budget in INR")
 
 
+class CareerSimulatorRequest(BaseModel):
+    skills: List[str] = Field(default_factory=list, description="Current user skills")
+    target_role: Optional[str] = Field(default=None, description="Target role used for job lookup")
+    location: Optional[str] = Field(default=None, description="Location used for job lookup")
+    interests: List[str] = Field(default_factory=list, description="Optional interests")
+    free_only: bool = Field(default=False, description="When true, prefer free course pathways")
+    add_skills: List[str] = Field(default_factory=list, description="Skills to test in the simulation")
+    max_weeks: Optional[int] = Field(default=None, description="Optional learning time ceiling")
+    budget_inr: Optional[int] = Field(default=None, description="Optional learning budget ceiling")
+
+
 class LangGraphUserProfile(UserProfile):
     """Canonical profile accepted by the end-to-end LangGraph endpoint."""
     skills: List[str] = Field(..., description="Candidate's current skills", min_length=0)
@@ -181,6 +192,82 @@ async def parse_profile_text(request: TextParseRequest):
     return {"success": True, "profile": parsed_profile}
 
 
+# ---------------------------------------------------------------------------
+# 1b. Voice Transcription Endpoint (Gemini Audio → Text)
+# ---------------------------------------------------------------------------
+
+ALLOWED_AUDIO_MIME = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/x-m4a": ".m4a",
+    "application/octet-stream": ".webm",  # browser fallback MIME
+}
+
+
+@app.post("/api/voice/transcribe")
+async def transcribe_voice(audio: UploadFile = File(...)):
+    """
+    Accept an audio recording from the browser (WebM/OGG/WAV),
+    transcribe it using ElevenLabs Speech-to-Text, and return the text transcript.
+    """
+    import os as _env_os
+    import httpx
+
+    api_key = (_env_os.getenv("ELEVENLABS_API_KEY") or "").strip()
+    if not api_key or api_key == "your_elevenlabs_api_key_here":
+        raise HTTPException(
+            status_code=503,
+            detail="ElevenLabs API key not configured. Add ELEVENLABS_API_KEY to your .env file."
+        )
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio file is empty.")
+
+    content_type = (audio.content_type or "audio/webm").split(";")[0].strip()
+    ext = ALLOWED_AUDIO_MIME.get(content_type, ".webm")
+    filename = f"recording{ext}"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={
+                    "xi-api-key": api_key,
+                },
+                files={
+                    "file": (filename, audio_bytes, content_type),
+                },
+                data={
+                    "model_id": "scribe_v1",   # ElevenLabs Scribe v1 STT model
+                },
+            )
+
+        if response.status_code != 200:
+            error_detail = response.text or "ElevenLabs STT request failed."
+            raise HTTPException(status_code=502, detail=f"ElevenLabs error: {error_detail}")
+
+        result = response.json()
+        # ElevenLabs returns { "text": "...", "words": [...], ... }
+        transcript = (result.get("text") or "").strip()
+
+        if not transcript:
+            raise HTTPException(status_code=422, detail="No speech detected. Please try speaking more clearly.")
+
+        return {"success": True, "transcript": transcript}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Voice transcription failed: {str(exc)}"
+        ) from exc
+
+
 @app.post("/api/training/recommend")
 async def recommend_training_courses(request: TrainingRecommendRequest):
     """Recommend high-ROI courses matching missing skills using Training Recommendation Agent."""
@@ -227,7 +314,6 @@ async def optimize_skill_combinations(request: SkillCombinationOptimizerRequest)
             )
             rag_sources = list(rag_result.get("retrieved_sources") or [])
         except Exception:
-            # RAG is an evidence enhancement, not a dependency of the optimizer.
             rag_sources = []
 
         result = optimizer_module.optimize_skill_combinations(
@@ -246,6 +332,41 @@ async def optimize_skill_combinations(request: SkillCombinationOptimizerRequest)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Skill combination optimization failed: {str(exc)}",
+        ) from exc
+
+
+@app.post("/api/career-simulator/simulate")
+async def simulate_career_path_endpoint(request: CareerSimulatorRequest):
+    """Run a before/after career-growth simulation for selected learning additions."""
+    try:
+        from orchestration.career_simulator import simulate_career_path
+    except Exception:  # pragma: no cover
+        try:
+            from backend.orchestration.career_simulator import simulate_career_path
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Career simulator unavailable: {exc}",
+            ) from exc
+
+    try:
+        result = simulate_career_path(
+            user_profile={
+                "skills": request.skills,
+                "target_role": request.target_role,
+                "location": request.location,
+                "interests": request.interests,
+                "free_only": request.free_only,
+            },
+            add_skills=request.add_skills,
+            max_weeks=request.max_weeks,
+            budget_inr=request.budget_inr,
+        )
+        return {"success": True, "career_simulator": result}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Career simulation failed: {exc}",
         ) from exc
 
 
@@ -302,6 +423,47 @@ async def run_skill_gap_graph(
     if hasattr(final_profile, "model_dump"):
         final_profile = final_profile.model_dump(mode="json")
 
+    opportunity_analysis = final_state.get(
+        "opportunity_analysis",
+        {"current_jobs": 0, "opportunities": [], "combinations": []},
+    )
+    opportunity_discovery = final_state.get(
+        "opportunity_discovery",
+        opportunity_analysis.get("opportunity_discovery") or {
+            "current_matching_jobs": opportunity_analysis.get("current_jobs", 0),
+            "skill_opportunities": [],
+            "recommended_sequence": [],
+            "cumulative_plan": [],
+            "total_jobs_unlocked": 0,
+            "total_learning_weeks": 0,
+            "total_cost_inr": 0,
+        },
+    )
+
+    missing_skills = sorted({
+        skill
+        for gap in final_state.get("skill_gaps", final_state.get("gap_analyses", []))
+        for skill in (gap.get("missing_skills") or [])
+    })
+
+    try:
+        from orchestration import simulate_career_path
+    except Exception:  # pragma: no cover
+        from backend.orchestration import simulate_career_path
+
+    career_simulator = simulate_career_path(
+        user_profile={
+            "skills": final_profile.get("skills") or [],
+            "target_role": final_profile.get("target_role") or getattr(profile, "target_role", None),
+            "location": final_profile.get("location") or getattr(profile, "location", None),
+            "interests": final_profile.get("interests") or [],
+            "free_only": final_state.get("free_only", getattr(profile, "free_only", False)),
+        },
+        add_skills=missing_skills[:4],
+        max_weeks=None,
+        budget_inr=None,
+    )
+
     return {
         "user_profile": final_profile,
         "profile": final_profile,
@@ -312,11 +474,10 @@ async def run_skill_gap_graph(
         "gap_analyses": final_state.get("gap_analyses", []),
         "skill_gaps": final_state.get("skill_gaps", final_state.get("gap_analyses", [])),
         "current_jobs": final_state.get("current_jobs", 0),
-        "opportunity_analysis": final_state.get(
-            "opportunity_analysis",
-            {"current_jobs": 0, "opportunities": [], "combinations": []},
-        ),
+        "opportunity_analysis": opportunity_analysis,
+        "opportunity_discovery": opportunity_discovery,
         "career_intelligence": _build_career_intelligence(final_state),
+        "career_simulator": career_simulator,
         "training_recommendations": final_state.get("training_recommendations", []),
         "time_to_ready": final_state.get("time_to_ready", {}),
         "retrieved_jobs": final_state.get("retrieved_jobs", []),

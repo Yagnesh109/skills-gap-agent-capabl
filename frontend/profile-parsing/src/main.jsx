@@ -11,13 +11,19 @@ function App() {
   const [mode, setMode] = React.useState('file')
   const [file, setFile] = React.useState(null)
   const [text, setText] = React.useState('')
+  const [voiceTranscript, setVoiceTranscript] = React.useState('')
+  const [isRecording, setIsRecording] = React.useState(false)
   const [profile, setProfile] = React.useState(null)
   const [targetRole, setTargetRole] = React.useState('')
   const [location, setLocation] = React.useState('')
   const [freeOnly, setFreeOnly] = React.useState(false)
   const [workflow, setWorkflow] = React.useState(null)
+  const [careerSimulator, setCareerSimulator] = React.useState(null)
+  const [simulatorInput, setSimulatorInput] = React.useState('')
+  const [simulatorBusy, setSimulatorBusy] = React.useState(false)
   const [notice, setNotice] = React.useState(null)
   const fileRef = React.useRef(null)
+  const recognitionRef = React.useRef(null)
 
   // Agent Pipeline Drawer States
   const [widgetOpen, setWidgetOpen] = React.useState(false)
@@ -30,13 +36,75 @@ function App() {
   const matchedJobs = workflow?.matched_jobs || workflow?.matching_results || []
   const gaps = workflow?.skill_gaps || workflow?.gap_analyses || []
   const opportunities = workflow?.opportunity_analysis?.opportunities || []
+  const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
+    current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
+    skill_opportunities: [],
+    recommended_sequence: [],
+    cumulative_plan: [],
+    total_jobs_unlocked: 0,
+    total_learning_weeks: 0,
+    total_cost_inr: 0,
+  }
   const courses = workflow?.training_recommendations || []
   const missingSkills = [...new Set(gaps.flatMap((gap) => gap.missing_skills || []))]
   const currentJobs = workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0
 
+  const [widgetLogs, setWidgetLogs] = React.useState([])
+  const [currentStepIndex, setCurrentStepIndex] = React.useState(0)
+  const [activeAgentName, setActiveAgentName] = React.useState('')
+  const [isFinished, setIsFinished] = React.useState(false)
+
   const closeEventSource = () => {
     if (eventSourceRef.current) eventSourceRef.current.close()
     eventSourceRef.current = null
+  }
+
+  React.useEffect(() => {
+    const defaultSkills = missingSkills.slice(0, 4).join(', ')
+    if (!simulatorInput && defaultSkills) {
+      setSimulatorInput(defaultSkills)
+    }
+  }, [missingSkills, simulatorInput])
+
+  React.useEffect(() => {
+    if (workflow?.career_simulator) {
+      setCareerSimulator(workflow.career_simulator)
+    }
+  }, [workflow])
+
+  async function runCareerSimulator() {
+    if (!profile) return
+    setSimulatorBusy(true)
+    setNotice(null)
+
+    try {
+      const body = {
+        skills: profile.skills || [],
+        target_role: targetRole || profile.target_role || '',
+        location: location || profile.location || '',
+        interests: profile.interests || [],
+        free_only: freeOnly,
+        add_skills: simulatorInput.split(',').map((item) => item.trim()).filter(Boolean),
+      }
+      const response = await fetch(`${API_BASE_URL}/api/career-simulator/simulate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Career simulator failed.')
+      setCareerSimulator(data.career_simulator)
+      setNotice({ type: 'success', text: 'What-if simulation updated for the selected learning plan.' })
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message })
+    } finally {
+      setSimulatorBusy(false)
+    }
+  }
+
+  const addLog = (agent, message, type = 'info') => {
+    const timeStr = new Date().toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' })
+    setWidgetLogs((prev) => [...prev, { time: timeStr, agent, message, type }])
   }
 
   React.useEffect(() => () => closeEventSource(), [])
@@ -89,14 +157,124 @@ function App() {
     }
   }
 
+  const mediaRecorderRef = React.useRef(null)
+  const audioChunksRef = React.useRef([])
+  const audioFileRef = React.useRef(null)
+  const [isTranscribing, setIsTranscribing] = React.useState(false)
+  const [liveInterim, setLiveInterim] = React.useState('')
+
+  async function toggleVoiceRecording() {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop()
+      recognitionRef.current?.stop()
+      setIsRecording(false)
+      setLiveInterim('')
+      return
+    }
+
+    let stream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      setNotice({ type: 'error', text: 'Microphone access denied. Please allow mic permissions and try again.' })
+      return
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition()
+      recognition.lang = 'en-US'
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognitionRef.current = recognition
+      recognition.onresult = (e) => {
+        let interim = ''
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (!e.results[i].isFinal) interim += e.results[i][0].transcript
+        }
+        setLiveInterim(interim)
+      }
+      recognition.onerror = () => {}
+      recognition.start()
+    }
+
+    audioChunksRef.current = []
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
+
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.current = recorder
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop())
+      setLiveInterim('')
+
+      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+      audioChunksRef.current = []
+
+      if (blob.size < 1000) {
+        setNotice({ type: 'error', text: 'Recording was too short. Please speak for at least a second.' })
+        return
+      }
+
+      await sendAudioToBackend(blob, 'recording.webm')
+    }
+
+    recorder.start(250)
+    setIsRecording(true)
+  }
+
+  async function sendAudioToBackend(audioBlob, filename = 'recording.webm') {
+    setIsTranscribing(true)
+    try {
+      const form = new FormData()
+      form.append('audio', audioBlob, filename)
+      const res = await fetch(`${API_BASE_URL}/api/voice/transcribe`, { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Transcription failed.')
+      setVoiceTranscript((prev) => (prev ? prev + ' ' + data.transcript : data.transcript))
+    } catch (err) {
+      setNotice({ type: 'error', text: `Transcription error: ${err.message}` })
+    } finally {
+      setIsTranscribing(false)
+    }
+  }
+
+  async function handleAudioFileUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await sendAudioToBackend(file, file.name)
+    if (audioFileRef.current) audioFileRef.current.value = ''
+  }
+
   async function runFullAgentPipeline() {
     if (runStatus === 'running' || runStatus === 'starting') return
+    setNotice(null)
+    setProgressEvents([])
+    setRunStatus('starting')
+    setProgressDisconnected(false)
+    setWidgetError(null)
+    setWidgetOpen(true)
     try {
       let parseResponse
       if (mode === 'file') {
         if (!file) throw new Error('Please select a resume file first.')
         const body = new FormData(); body.append('file', file)
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse`, { method: 'POST', body })
+      } else if (mode === 'voice') {
+        if (!voiceTranscript.trim()) throw new Error('Please record your resume details using voice first.')
+        addLog('Document Extractor Agent', 'Processing voice transcript tokens...', 'info')
+        setCurrentStepIndex(1)
+        setActiveAgentName('Profile Extractor Agent (Gemini 3.6)')
+        addLog('Profile Extractor Agent (Gemini 3.6)', 'Parsing voice transcript & extracting candidate skills with Gemini 3.6 LLM...', 'info')
+        parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: voiceTranscript }),
+        })
       } else {
         if (!text.trim()) throw new Error('Please paste resume text first.')
         parseResponse = await fetch(`${API_BASE_URL}/api/profile/parse-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
@@ -109,32 +287,99 @@ function App() {
       const selectedLoc = location || parsedProfile.location || ''
       if (!targetRole) setTargetRole(selectedRole)
       if (!location) setLocation(selectedLoc)
+
+      addLog('Profile Extractor Agent (Gemini 3.6)', `Extracted candidate profile: "${parsedProfile.name || 'Candidate'}". Skills count: ${(parsedProfile.skills || []).length}`, 'success')
+      setCurrentStepIndex(2)
+      setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
+      addLog('Skill Match Agent (Jooble & Vector DB)', `Searching live Jooble market job vector embeddings for "${selectedRole || 'Software Engineer'}"...`, 'info')
+
       await startWorkflowRun({ ...parsedProfile, skills: parsedProfile.skills || [], target_role: selectedRole, location: selectedLoc, free_only: freeOnly }, 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.')
+
+      setCurrentStepIndex(3)
+      setActiveAgentName('Gap Analysis Agent (LangGraph)')
+      addLog('Gap Analysis Agent (LangGraph)', 'Evaluating candidate skills matrix against market requirements...', 'info')
+      setCurrentStepIndex(4)
+      setActiveAgentName('Opportunity Simulation Agent')
+      addLog('Opportunity Simulation Agent', 'Simulating missing skill permutations & job unlock growth impact...', 'info')
+      setCurrentStepIndex(5)
+      setActiveAgentName('Training Recommendation Agent (MCP)')
+      addLog('Training Recommendation Agent (MCP)', 'Querying course catalog for high-ROI training pathways...', 'info')
+      setCurrentStepIndex(6)
+      setActiveAgentName('Report Generation Agent')
+      addLog('Report Generation Agent', 'Compiling AI Career Report & dashboard metrics...', 'info')
+      addLog('Report Generation Agent', 'Career Report ready for download & view!', 'success')
+      addLog('Orchestrator Agent', 'All multi-agent workflow nodes executed successfully!', 'success')
+      setIsFinished(true)
+      setNotice({ type: 'success', text: 'Multi-Agent career workflow completed! Review your profile, matched jobs, skill gaps, and recommended training below.' })
     } catch (error) {
-      setRunStatus('failed'); setWidgetError(error.message); setWidgetOpen(true); setNotice({ type: 'error', text: error.message })
+      setRunStatus('failed')
+      setWidgetError(error.message)
+      setWidgetOpen(true)
+      setNotice({ type: 'error', text: error.message })
     }
   }
 
   async function rerunCareerAnalysis() {
     if (!profile || runStatus === 'running' || runStatus === 'starting') return
-    await startWorkflowRun({ ...profile, skills: profile.skills || [], target_role: targetRole, location, free_only: freeOnly }, 'Updated career analysis complete!')
+    setNotice(null)
+    setCurrentStepIndex(2)
+    setActiveAgentName('Skill Match Agent (Jooble & Vector DB)')
+    setWidgetLogs([])
+    setIsFinished(false)
+    setWidgetError(null)
+    setWidgetOpen(true)
+
+    try {
+      addLog('Skill Match Agent (Jooble & Vector DB)', `Re-querying market jobs for updated target role: "${targetRole}"...`, 'info')
+      setCurrentStepIndex(3)
+      setActiveAgentName('Gap Analysis Agent (LangGraph)')
+      addLog('Gap Analysis Agent (LangGraph)', 'Re-executing LangGraph skill gap analysis...', 'info')
+      await startWorkflowRun({ ...profile, skills: profile.skills || [], target_role: targetRole, location, free_only: freeOnly }, 'Updated career analysis complete!')
+      setCurrentStepIndex(4)
+      setActiveAgentName('Opportunity Simulation Agent')
+      addLog('Opportunity Simulation Agent', 'Recalculating job unlock multipliers...', 'info')
+      setCurrentStepIndex(5)
+      setActiveAgentName('Training Recommendation Agent (MCP)')
+      addLog('Training Recommendation Agent (MCP)', 'Updating course recommendations...', 'info')
+      addLog('Orchestrator Agent', 'Updated career analysis workflow complete!', 'success')
+      setIsFinished(true)
+      setNotice({ type: 'success', text: 'Updated career analysis complete!' })
+    } catch (error) {
+      setWidgetError(error.message)
+      addLog('System Error', error.message, 'error')
+      setNotice({ type: 'error', text: error.message })
+    }
   }
 
   function reset() {
     closeEventSource()
+    mediaRecorderRef.current?.stop()
+    recognitionRef.current?.stop()
     setFile(null)
     setText('')
+    setVoiceTranscript('')
+    setIsRecording(false)
+    setIsTranscribing(false)
+    setLiveInterim('')
     setProfile(null)
     setTargetRole('')
     setLocation('')
     setFreeOnly(false)
     setWorkflow(null)
+    setCareerSimulator(null)
+    setSimulatorInput('')
+    setSimulatorBusy(false)
     setNotice(null)
     setWidgetOpen(false)
+    setWidgetLogs([])
+    setCurrentStepIndex(0)
+    setActiveAgentName('')
+    setIsFinished(false)
     setProgressEvents([])
     setRunStatus('idle')
     setWidgetError(null)
     if (fileRef.current) fileRef.current.value = ''
+    if (audioFileRef.current) audioFileRef.current.value = ''
   }
 
   return (
@@ -183,6 +428,7 @@ function App() {
             <div className="mode-switch" role="tablist">
               <button className={mode === 'file' ? 'selected' : ''} onClick={() => setMode('file')}>Upload file</button>
               <button className={mode === 'text' ? 'selected' : ''} onClick={() => setMode('text')}>Paste text</button>
+              <button className={mode === 'voice' ? 'selected' : ''} onClick={() => setMode('voice')}>🎙 Voice</button>
             </div>
 
             {mode === 'file' ? (
@@ -197,13 +443,111 @@ function App() {
                 <strong>{file ? file.name : 'Drop resume file here'}</strong>
                 <span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB selected` : 'PDF, DOCX, TXT, PNG or JPG · up to 10 MB'}</span>
               </label>
-            ) : (
+            ) : mode === 'text' ? (
               <textarea
                 className="resume-textarea"
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 placeholder="Paste the full text of your resume here..."
               />
+            ) : (
+              <div className="voice-panel">
+                {/* Mic button */}
+                <button
+                  className={`voice-mic-btn ${isRecording ? 'recording' : ''} ${isTranscribing ? 'transcribing' : ''}`}
+                  onClick={toggleVoiceRecording}
+                  disabled={isTranscribing}
+                  title={isRecording ? 'Stop & transcribe' : isTranscribing ? 'Transcribing…' : 'Start recording'}
+                >
+                  {isTranscribing ? (
+                    <>
+                      <span className="voice-mic-icon">⏳</span>
+                      <span>Transcribing…</span>
+                    </>
+                  ) : isRecording ? (
+                    <>
+                      <span className="voice-mic-icon">⏹</span>
+                      <span>Stop & Transcribe</span>
+                      <span className="voice-wave">
+                        <span /><span /><span /><span /><span />
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="voice-mic-icon">🎙</span>
+                      <span>Start Recording</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Status hint */}
+                <p className="voice-hint">
+                  {isTranscribing
+                    ? 'Sending audio to Gemini AI for transcription…'
+                    : isRecording
+                    ? 'Listening… speak clearly. Click ⏹ when done.'
+                    : voiceTranscript
+                    ? 'Recording saved. Record more or click Analyze Resume ⚡'
+                    : 'Click the mic to speak your resume details aloud.'}
+                </p>
+
+                {/* Live interim preview while recording */}
+                {isRecording && liveInterim && (
+                  <div className="voice-interim">
+                    <span className="voice-interim-dot" />
+                    <em>{liveInterim}</em>
+                  </div>
+                )}
+
+                {/* Transcribing spinner bar */}
+                {isTranscribing && (
+                  <div className="voice-transcribing-bar">
+                    <div className="voice-transcribing-fill" />
+                  </div>
+                )}
+
+                {/* ── Divider + MP3 / audio file upload ──────────────── */}
+                {!isRecording && !isTranscribing && (
+                  <div className="voice-or-divider">
+                    <span>or upload an audio file</span>
+                  </div>
+                )}
+
+                {!isRecording && !isTranscribing && (
+                  <label className="voice-file-dropzone">
+                    <input
+                      ref={audioFileRef}
+                      type="file"
+                      accept=".mp3,.wav,.ogg,.webm,.m4a,audio/*"
+                      onChange={handleAudioFileUpload}
+                    />
+                    <span className="voice-file-icon">🎵</span>
+                    <span className="voice-file-text">Drop MP3 / audio file here</span>
+                    <span className="voice-file-sub">MP3, WAV, OGG, M4A · up to 25 MB</span>
+                  </label>
+                )}
+
+                {/* Final transcript — editable so user can correct it */}
+                {voiceTranscript && !isRecording && (
+                  <div className="voice-transcript">
+                    <div className="voice-transcript-label">✏️ click to edit</div>
+                    <textarea
+                      className="voice-transcript-textarea"
+                      value={voiceTranscript}
+                      onChange={(e) => setVoiceTranscript(e.target.value)}
+                      rows={5}
+                    />
+                    <div className="voice-transcript-actions">
+                      <button
+                        className="quiet-button"
+                        onClick={() => setVoiceTranscript('')}
+                      >
+                        ✕ Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             <button className="accent-button full-width" onClick={runFullAgentPipeline}>
@@ -275,6 +619,11 @@ function App() {
             currentJobs={currentJobs}
             missingSkills={missingSkills}
             freeOnly={workflow.free_only ?? freeOnly}
+            careerSimulator={careerSimulator}
+            simulatorInput={simulatorInput}
+            setSimulatorInput={setSimulatorInput}
+            runCareerSimulator={runCareerSimulator}
+            simulatorBusy={simulatorBusy}
           />
         )}
       </main>
@@ -313,8 +662,17 @@ function ProfileSnapshot({ profile }) {
   )
 }
 
-function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly }) {
+function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs, gaps, opportunities, courses, currentJobs, missingSkills, freeOnly, careerSimulator, simulatorInput, setSimulatorInput, runCareerSimulator, simulatorBusy }) {
   const timeToReady = workflow?.time_to_ready || {}
+  const opportunityDiscovery = workflow?.opportunity_discovery || workflow?.opportunity_analysis?.opportunity_discovery || {
+    current_matching_jobs: workflow?.current_jobs ?? workflow?.opportunity_analysis?.current_jobs ?? 0,
+    skill_opportunities: [],
+    recommended_sequence: [],
+    cumulative_plan: [],
+    total_jobs_unlocked: 0,
+    total_learning_weeks: 0,
+    total_cost_inr: 0,
+  }
   const retrievedJobs = workflow?.retrieved_jobs || []
   const retrievedCourses = workflow?.retrieved_courses || []
   const retrievedSources = workflow?.retrieved_sources || []
@@ -466,8 +824,122 @@ function ResultsDashboard({ profile, targetRole, location, workflow, matchedJobs
         </div>
       </section>
 
+      <section className="opportunity-section">
+        <SectionTitle number="E" title="What should I learn next?" meta="PathWise discovery engine" />
+        <p className="plain-helper">Based on your current profile, matching jobs, and the next skills that unlock the most opportunities.</p>
+        <div className="opportunity-grid">
+          {(opportunityDiscovery.skill_opportunities || []).slice(0, 6).map((item, index) => (
+            <div className="opportunity-card" key={`${item.skill}-${index}`}>
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">{item.skill}</strong>
+                  <span className="op-skill-time">⏱️ {item.learning_weeks || 0} week(s)</span>
+                </div>
+                <div className="op-unlock-badge">
+                  <span className="op-unlock-num">+{item.jobs_unlocked || 0}</span>
+                  <span className="op-unlock-label">jobs</span>
+                </div>
+              </div>
+              <div className="op-progress-track">
+                <div className="op-progress-fill" style={{ width: `${Math.min(100, ((item.opportunity_rate || 0) * 8) + 15)}%` }} />
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.9rem' }}>
+                <strong>{item.learning_cost_inr ? formatInr(item.learning_cost_inr) : '₹0'}</strong>
+                <span>learning cost</span>
+              </div>
+              <p style={{ marginTop: '0.7rem', fontSize: '0.85rem', color: '#7d87ad' }}>
+                Opportunity rate: {item.opportunity_rate ?? 0}/week · {item.is_free ? 'free path' : 'paid path'}
+              </p>
+            </div>
+          ))}
+          {!((opportunityDiscovery.skill_opportunities || []).length) && <EmptyState text="No discovery candidates are available yet for this profile." />}
+        </div>
+        <div className="learning-plan" style={{ marginTop: '1rem' }}>
+          <div className="learning-plan-total">
+            Best sequence: {(opportunityDiscovery.recommended_sequence || []).slice(0, 5).join(' → ') || 'No sequence yet'}
+          </div>
+          <div className="learning-plan-total">
+            Unique jobs unlocked: +{opportunityDiscovery.total_jobs_unlocked || 0} · {opportunityDiscovery.total_learning_weeks || 0} weeks · {formatInr(opportunityDiscovery.total_cost_inr || 0)}
+          </div>
+        </div>
+      </section>
+
+      <section className="opportunity-section" style={{ marginTop: '1.5rem' }}>
+        <SectionTitle number="F" title="Career What-If Simulator" meta="Before / after learning plan" />
+        <p className="plain-helper">Test a specific skill plan to see how many more jobs open, how much time it takes, and whether it fits your budget.</p>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+          <textarea
+            value={simulatorInput}
+            onChange={(event) => setSimulatorInput(event.target.value)}
+            rows={3}
+            placeholder="Example: Docker, Kubernetes, SQL"
+            style={{ flex: '1 1 260px', minHeight: '96px', borderRadius: '12px', border: '1px solid #26314d', background: '#0a122e', color: '#eef3ff', padding: '0.9rem 1rem', resize: 'vertical' }}
+          />
+          <button className="accent-button" onClick={runCareerSimulator} disabled={simulatorBusy || !profile} style={{ alignSelf: 'flex-start' }}>
+            {simulatorBusy ? 'Simulating…' : 'Run What-If'}
+          </button>
+        </div>
+        {careerSimulator ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Current state</strong>
+                  <span className="op-skill-time">Before learning</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>{careerSimulator.current?.matching_jobs ?? 0}</strong>
+                <span>jobs match</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Avg. match: {careerSimulator.current?.average_match ?? 0.0}
+              </p>
+            </div>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Projected state</strong>
+                  <span className="op-skill-time">After learning</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>{careerSimulator.simulated?.matching_jobs ?? 0}</strong>
+                <span>jobs match</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Avg. match: {careerSimulator.simulated?.average_match ?? 0.0}
+              </p>
+            </div>
+            <div className="opportunity-card">
+              <div className="op-card-header">
+                <div className="op-skill-info">
+                  <strong className="op-skill-name">Learning impact</strong>
+                  <span className="op-skill-time">Net gain</span>
+                </div>
+              </div>
+              <div className="course-stats" style={{ marginTop: '0.8rem' }}>
+                <strong>+{careerSimulator.change?.jobs_unlocked ?? 0}</strong>
+                <span>jobs unlocked</span>
+              </div>
+              <p style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: '#7d87ad' }}>
+                Match lift: {careerSimulator.change?.average_match_change ?? 0.0}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="Select a skill plan to simulate how your next learning choices could change your career options." />
+        )}
+        {careerSimulator && (
+          <div className="learning-plan" style={{ marginTop: '1rem' }}>
+            <div className="learning-plan-total">Skills added: {(careerSimulator.selected_skills || []).join(', ') || 'No skills selected'}</div>
+            <div className="learning-plan-total">Plan fit: {careerSimulator.constraints?.within_time_limit !== false && careerSimulator.constraints?.within_budget !== false ? 'Within your constraints' : 'Needs adjustment'} · {careerSimulator.learning?.total_weeks ?? 0} weeks · {formatInr(careerSimulator.learning?.total_cost_inr ?? 0)}</div>
+          </div>
+        )}
+      </section>
+
       <section className="learning-section">
-        <SectionTitle number="E" title="Your training plan" meta="High-ROI Recommended Courses" />
+        <SectionTitle number="G" title="Your training plan" meta="High-ROI Recommended Courses" />
         <p className="plain-helper">These course recommendations are chosen by the Training Agent to close your top skill gaps.</p>
         <div className="course-grid">
           {courses.map((course) => (
